@@ -284,4 +284,11 @@ def decide_chat_object(message: str, current: Optional[StockIdentity], registry:
         r"(?:呢|如何|怎样)?[？?！!。\s]*", text,
     ):
         return ObjectDecision("clarify")
+    # No active target yet and the message names exactly one stock: bind it.
+    # Without a bound target the scope stays empty, and every stock-scoped tool
+    # then refuses with `stock_scope_violation` (reason `stock_scope_required`),
+    # so a fresh session cannot answer anything at all. The rules above still
+    # refuse to hijack an *existing* target from incidental prose.
+    if current is None and not denied and len(mentions) == 1 and mentions[0].identity is not None:
+        return ObjectDecision("confirm", target=mentions[0], changes_target=True)
     return ObjectDecision("maintain")

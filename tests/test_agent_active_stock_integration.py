@@ -2352,6 +2352,63 @@ def test_english_chat_targets_confirm_and_compare(bundled_chat_stock_index, mess
         assert {identity.stock_code for identity in decision.participants} == set(codes)
 
 
+@pytest.mark.parametrize("message,code", [
+    # Every one of these used to fall through to `maintain`, which leaves the
+    # Chat scope empty and makes every stock-scoped tool refuse the call with
+    # `stock_scope_violation` (reason `stock_scope_required`).
+    ("What's NVDA doing?", "NVDA"),
+    ("NVDA news", "NVDA"),
+    ("give me NVDA quote", "NVDA"),
+    ("NVDA earnings", "NVDA"),
+    ("Tell me the latest on NVDA", "NVDA"),
+    ("What do you think of NVDA?", "NVDA"),
+    ("why did NVDA drop today", "NVDA"),
+])
+def test_single_ticker_in_free_prose_binds_scope(bundled_chat_stock_index, message, code):
+    """One resolvable mention with no active target must bind, not stay empty."""
+    from src.agent.chat_object_decision import decide_chat_object
+    from src.agent.stock_scope import StockScope
+    from src.agent.tools.execution import _resolve_tool_stock_access
+    from src.services.agent_chat_session_service import _stock_lookup
+
+    registry, lookup = _stock_lookup()
+    decision = decide_chat_object(message, None, registry, lookup)
+    assert decision.kind == "confirm"
+    target = decision.target.identity
+    assert target.stock_code == code
+    # Mirror the Chat scope contract: the confirmed target is the only member.
+    scope = StockScope(
+        expected_stock_code=target.stock_code,
+        allowed_stock_codes={target.stock_code},
+        mode="switch",
+        strict=True,
+        identities=(target,),
+    )
+    tool_def = type("ToolDef", (), {
+        "policy": type("Policy", (), {"supported_asset_types": ("stock", "index")})(),
+        "parameters": [type("Param", (), {"name": "stock_code"})()],
+    })()
+    tool_registry = type("Registry", (), {"resolve": lambda _self, _name: tool_def})()
+    guard_error, access = _resolve_tool_stock_access(
+        tool_registry, "get_realtime_quote", {"stock_code": code}, scope, registry,
+    )
+    assert guard_error is None, guard_error
+    assert access.identity.stock_code == code
+
+
+@pytest.mark.parametrize("message,kind", [
+    ("不要分析 NVDA", "maintain"),          # denied stays denied
+    ("NVDA and AMD", "clarify"),           # two mentions, no operation
+    ("Tell me the latest on NVDA and AMD", "clarify"),
+])
+def test_single_mention_binding_keeps_guards(bundled_chat_stock_index, message, kind):
+    from src.agent.chat_object_decision import decide_chat_object
+    from src.services.agent_chat_session_service import _stock_lookup
+
+    registry, lookup = _stock_lookup()
+    assert decide_chat_object(message, None, registry, lookup).kind == kind
+
+
 @pytest.fixture
 def actual_bundled_chat_api(actual_chat_api, bundled_chat_stock_index):
     # Keep the real HTTP/session/executor chain; only the model boundary is
