@@ -608,7 +608,8 @@ def test_json_mode_budget_exhaustion_retries_without_response_format() -> None:
     assert attempts[0]["response_format"] == {"type": "json_object"}
     assert "response_format" not in attempts[1]
     # The retry must leave room for the reasoning tokens that just ate the budget.
-    assert attempts[1]["max_tokens"] == 4096
+    # Doubling 2048 is not enough on a reasoning model, so a floor applies.
+    assert attempts[1]["max_tokens"] == 8192
 
 
 def test_plain_empty_content_without_json_mode_is_not_retried() -> None:
@@ -715,3 +716,31 @@ def test_ranking_call_uses_localized_system_message(monkeypatch) -> None:
     )
 
     assert sent["language"] == "en"
+
+
+def test_retry_budget_floor_applies_to_small_and_absent_budgets() -> None:
+    from src.services.screening import ranker
+
+    assert ranker._retry_without_json_mode({"max_tokens": 512})["max_tokens"] == 8192
+    assert ranker._retry_without_json_mode({})["max_tokens"] == 8192
+    # A caller asking for more than the floor keeps its own budget.
+    assert ranker._retry_without_json_mode({"max_tokens": 16384})["max_tokens"] == 32768
+
+
+def test_screening_ranking_budget_defaults_leave_room_for_reasoning() -> None:
+    from src.services.screening.config import Config
+
+    assert Config().llm_max_tokens >= 8192
+
+
+def test_realistic_english_prompt_exceeds_old_budget() -> None:
+    """Regression guard: the EN prompt must not be starved by a 2048 budget."""
+    from src.services.screening import ranker
+
+    cands = [Pick(rank=i + 1, code=f"T{i}", name=f"T{i}", final_score=90 - i, screen_score=90 - i)
+             for i in range(3)]
+    context = "snapshot " + ("candidate metric block " * 80)
+    prompt = ranker._build_ranking_prompt(cands, "hints", context, language="en")
+    system = ranker._ranking_system_instructions("en")
+    # The prompt plus reasoning headroom is what the old 2048 budget could not hold.
+    assert len(prompt) + len(system) > 2048

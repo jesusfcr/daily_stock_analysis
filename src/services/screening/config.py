@@ -186,7 +186,7 @@ class Config:
     llm_min_coverage: float = 0.60
     llm_context_max_chars: int = 4000
     llm_timeout_sec: float = 60.0
-    llm_max_tokens: int = 2048
+    llm_max_tokens: int = 8192
     # Language of the ranking prompt and of the prose it returns. Falls back to
     # REPORT_LANGUAGE so screening follows the same choice as reports and Chat.
     report_language: str = "zh"
@@ -324,7 +324,7 @@ class Config:
             llm_min_coverage=_parse_float_env("LLM_MIN_COVERAGE", 0.60),
             llm_context_max_chars=max(500, int(os.getenv("LLM_CONTEXT_MAX_CHARS", "4000"))),
             llm_timeout_sec=max(1.0, _parse_float_env("LLM_TIMEOUT_SEC", 60.0)),
-            llm_max_tokens=max(1, int(os.getenv("LLM_MAX_TOKENS", "2048"))),
+            llm_max_tokens=max(1, int(os.getenv("LLM_MAX_TOKENS", "8192"))),
             report_language=os.getenv("REPORT_LANGUAGE", "zh").strip() or "zh",
             snapshot_source_priority=_resolve_snapshot_source_priority(),
             fallback_snapshot_path=fallback_snapshot_path,

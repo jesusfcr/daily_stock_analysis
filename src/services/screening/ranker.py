@@ -28,6 +28,10 @@ def _normalize_code(value: object) -> str:
 
 logger = logging.getLogger(__name__)
 _DEFAULT_RANKING_PROMPT_MAX_CHARS = 24_000
+# Reasoning models emit reasoning_content before the answer. Measured on
+# deepseek-v4-flash: the ranking prompt needs ~2.6k completion tokens, and at
+# 2048 the whole budget goes to reasoning and the content comes back empty.
+_MIN_RANKING_MAX_TOKENS = 8192
 _PROMPT_TRIM_MARKER = "[prompt_trimmed]"
 _RANKING_RETRY_INSTRUCTIONS = (
     "\n\n上一次输出没有满足结构化覆盖率要求。"
@@ -121,7 +125,7 @@ def rank_candidates(
     config_path: str = "",
     timeout_sec: float = 60.0,
     max_prompt_chars: int | None = _DEFAULT_RANKING_PROMPT_MAX_CHARS,
-    max_tokens: int | None = 2048,
+    max_tokens: int | None = 8192,
     language: str = "zh",
 ) -> list[Pick]:
     """Use LLM to re-rank candidates and add ranking_reason / risk_summary.
@@ -171,7 +175,7 @@ def rank_candidates_with_metadata(
     timeout_sec: float = 60.0,
     max_prompt_chars: int | None = _DEFAULT_RANKING_PROMPT_MAX_CHARS,
     degradation: list[str] | None = None,
-    max_tokens: int | None = 2048,
+    max_tokens: int | None = 8192,
     language: str = "zh",
 ) -> LLMRankingResult:
     """Use LLM to re-rank candidates and return global research metadata."""
@@ -676,7 +680,7 @@ def _call_llm(
     channels: list[dict[str, object]] | None = None,
     config_path: str = "",
     timeout_sec: float = 60.0,
-    max_tokens: int | None = 2048,
+    max_tokens: int | None = 8192,
     language: str = "zh",
 ) -> str:
     """Call LLM via litellm with fallback models and channel configs."""
@@ -1081,7 +1085,7 @@ def _call_litellm_router(
     temperature: float,
     json_mode: bool,
     timeout_sec: float,
-    max_tokens: int | None = 2048,
+    max_tokens: int | None = 8192,
 ) -> str | None:
     try:
         import yaml
@@ -1170,12 +1174,19 @@ def _response_field(value: object, name: str):
 
 
 def _retry_without_json_mode(call_kwargs: dict[str, object]) -> dict[str, object]:
-    """Drop JSON mode and leave headroom for the reasoning tokens it caused."""
+    """Drop JSON mode and leave headroom for the reasoning tokens it caused.
+
+    Doubling alone is not enough: a reasoning model spends several thousand
+    tokens before it emits any JSON, so the retry needs a real floor rather
+    than a multiple of a budget that was already too small.
+    """
     retry_kwargs = dict(call_kwargs)
     retry_kwargs.pop("response_format", None)
     budget = retry_kwargs.get("max_tokens")
     if isinstance(budget, int) and budget > 0:
-        retry_kwargs["max_tokens"] = budget * 2
+        retry_kwargs["max_tokens"] = max(budget * 2, _MIN_RANKING_MAX_TOKENS)
+    else:
+        retry_kwargs["max_tokens"] = _MIN_RANKING_MAX_TOKENS
     return retry_kwargs
 
 
