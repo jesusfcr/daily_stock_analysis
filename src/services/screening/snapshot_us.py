@@ -11,16 +11,28 @@ configuration path, so ``market="hk"`` is rejected at the pipeline level
 rather than silently screening the US pool.
 """
 
+import io
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
+import requests
 
 from src.core.trading_calendar import MARKET_TIMEZONE
 
 logger = logging.getLogger(__name__)
 
 _SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+
+# Wikipedia answers 403 to the default User-Agent pandas sends from
+# ``read_html(url)``, which silently collapsed the US universe to whatever
+# SCREENING_US_TICKERS happened to contain. Fetch the page ourselves with a
+# browser UA and hand the markup to pandas instead.
+_HTTP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
+_HTTP_TIMEOUT_SEC = 30.0
 
 _DEFAULT_US_UNIVERSE = [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "BRK-B",
@@ -50,7 +62,9 @@ def fetch_us_universe(source: str = "auto") -> list[str]:
                     logger.info("US universe from %s: %d tickers", s, len(tickers))
                     return tickers
             except Exception as e:
-                logger.debug("US universe source %s failed: %s", s, e)
+                # A blocked or broken source must stay visible: falling back to
+                # the built-in list silently narrows the whole US universe.
+                logger.warning("US universe source %s failed: %s", s, e)
         return list(_DEFAULT_US_UNIVERSE)
 
     if src == "sp500":
@@ -66,8 +80,15 @@ def fetch_us_universe(source: str = "auto") -> list[str]:
         raise ValueError(f"Unknown US universe source: {source}")
 
 
+def _fetch_text(url: str, timeout: float = _HTTP_TIMEOUT_SEC) -> str:
+    """Fetch a page as text with a User-Agent hosts like Wikipedia accept."""
+    response = requests.get(url, headers={"User-Agent": _HTTP_USER_AGENT}, timeout=timeout)
+    response.raise_for_status()
+    return response.text
+
+
 def _fetch_sp500_tickers() -> list[str]:
-    tables = pd.read_html(_SP500_WIKI_URL)
+    tables = pd.read_html(io.StringIO(_fetch_text(_SP500_WIKI_URL)))
     for tbl in tables:
         if "Symbol" in tbl.columns:
             return sorted(tbl["Symbol"].dropna().str.strip().str.replace(".", "-", regex=False).tolist())
