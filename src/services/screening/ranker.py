@@ -1038,6 +1038,44 @@ def _apply_screening_litellm_generation_params(
     )
 
 
+def _is_json_mode_budget_exhausted(response: object) -> bool:
+    """True when a JSON-mode call spent its whole budget on reasoning tokens.
+
+    Reasoning models behind an OpenAI-compatible gateway can emit only
+    ``reasoning_content`` and return an empty ``content`` with
+    ``finish_reason="length"``. Nothing raises, so the provider-error fallback
+    below never fires and the caller just sees an empty ranking response.
+    """
+    choices = _response_field(response, "choices")
+    if not isinstance(choices, list) or not choices:
+        return False
+    choice = choices[0]
+    if str(_response_field(choice, "finish_reason") or "").strip().lower() != "length":
+        return False
+    message = _response_field(choice, "message")
+    content = _response_field(message, "content") if message is not None else None
+    if isinstance(content, list):
+        content = "".join(str(_response_field(part, "text") or "") for part in content)
+    return not str(content or "").strip()
+
+
+def _response_field(value: object, name: str):
+    """Read one field from a response object or its dict form."""
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _retry_without_json_mode(call_kwargs: dict[str, object]) -> dict[str, object]:
+    """Drop JSON mode and leave headroom for the reasoning tokens it caused."""
+    retry_kwargs = dict(call_kwargs)
+    retry_kwargs.pop("response_format", None)
+    budget = retry_kwargs.get("max_tokens")
+    if isinstance(budget, int) and budget > 0:
+        retry_kwargs["max_tokens"] = budget * 2
+    return retry_kwargs
+
+
 def _call_screening_litellm_completion(
     call,
     *,
@@ -1046,7 +1084,7 @@ def _call_screening_litellm_completion(
     model_list: list[dict[str, object]] | None = None,
 ):
     try:
-        return call_litellm_with_param_recovery(
+        response = call_litellm_with_param_recovery(
             call,
             model=model,
             call_kwargs=call_kwargs,
@@ -1062,16 +1100,33 @@ def _call_screening_litellm_completion(
         # timeout/connection failures: a local OpenAI-compatible server may
         # keep generating after the client timeout, so a blind retry can
         # duplicate expensive work while the first request is still running.
-        retry_kwargs = dict(call_kwargs)
-        retry_kwargs.pop("response_format", None)
         return call_litellm_with_param_recovery(
             call,
             model=model,
-            call_kwargs=retry_kwargs,
+            call_kwargs=_retry_without_json_mode(call_kwargs),
             model_list=model_list,
             logger=logger,
             log_label="[Screening LiteLLM]",
         )
+
+    if "response_format" in call_kwargs and _is_json_mode_budget_exhausted(response):
+        # JSON mode is unusable on this model: it reasons until the budget runs
+        # out instead of answering. Retry without it rather than reporting an
+        # empty response and silently degrading to the local score.
+        logger.warning(
+            "[Screening LiteLLM] %s returned empty content in JSON mode "
+            "(finish_reason=length); retrying without response_format",
+            model,
+        )
+        return call_litellm_with_param_recovery(
+            call,
+            model=model,
+            call_kwargs=_retry_without_json_mode(call_kwargs),
+            model_list=model_list,
+            logger=logger,
+            log_label="[Screening LiteLLM]",
+        )
+    return response
 
 
 def _silence_litellm_logs(litellm) -> None:

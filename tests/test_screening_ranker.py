@@ -561,3 +561,88 @@ def test_rank_candidates_with_metadata_reports_all_invalid_models() -> None:
     assert result.failure_reason == "invalid_response"
     assert result.attempted_models == ["deepseek/deepseek-chat", "openai/gpt-4o"]
     assert len(result.errors) == 2
+
+
+# --------------------------------------------------------------------------- #
+# JSON mode on reasoning models: response_format can consume the whole budget
+# --------------------------------------------------------------------------- #
+
+
+def _completion(*, finish_reason: str, content: str):
+    """Minimal LiteLLM completion shape (dict form, like the gateway returns)."""
+    return {
+        "choices": [
+            {
+                "finish_reason": finish_reason,
+                "message": {"content": content, "reasoning_content": "thinking..."},
+            }
+        ]
+    }
+
+
+def _reasoning_truncation():
+    return _completion(finish_reason="length", content="")
+
+
+def _valid_json():
+    return _completion(finish_reason="stop", content='{"ranked": []}')
+
+
+def test_json_mode_budget_exhaustion_retries_without_response_format() -> None:
+    from src.services.screening import ranker
+
+    attempts: list[dict] = []
+
+    def call(request_kwargs):
+        attempts.append(dict(request_kwargs))
+        return _reasoning_truncation() if "response_format" in request_kwargs else _valid_json()
+
+    response = ranker._call_screening_litellm_completion(
+        call,
+        model="deepseek-v4-flash",
+        call_kwargs={"response_format": {"type": "json_object"}, "max_tokens": 2048},
+    )
+
+    assert response is not None
+    assert len(attempts) == 2
+    assert attempts[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in attempts[1]
+    # The retry must leave room for the reasoning tokens that just ate the budget.
+    assert attempts[1]["max_tokens"] == 4096
+
+
+def test_plain_empty_content_without_json_mode_is_not_retried() -> None:
+    from src.services.screening import ranker
+
+    attempts: list[dict] = []
+
+    def call(request_kwargs):
+        attempts.append(dict(request_kwargs))
+        return _reasoning_truncation()
+
+    ranker._call_screening_litellm_completion(
+        call,
+        model="deepseek-v4-flash",
+        call_kwargs={"max_tokens": 2048},
+    )
+
+    assert len(attempts) == 1
+
+
+def test_truncated_json_mode_still_succeeds_when_retry_also_fails() -> None:
+    """A failed retry must surface the retry's response, not loop forever."""
+    from src.services.screening import ranker
+
+    attempts: list[dict] = []
+
+    def call(request_kwargs):
+        attempts.append(dict(request_kwargs))
+        return _reasoning_truncation()
+
+    ranker._call_screening_litellm_completion(
+        call,
+        model="deepseek-v4-flash",
+        call_kwargs={"response_format": {"type": "json_object"}, "max_tokens": 2048},
+    )
+
+    assert len(attempts) == 2
