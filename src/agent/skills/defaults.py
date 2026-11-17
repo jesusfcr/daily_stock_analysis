@@ -105,15 +105,25 @@ following default risk controls as the shared baseline:
 """
 
 
-def get_default_trading_skill_policy(*, explicit_skill_selection: bool) -> str:
+def get_default_trading_skill_policy(*, explicit_skill_selection: bool, language: str = "zh") -> str:
     """Return the legacy default trading baseline only for implicit/default runs.
 
     When a caller explicitly chooses a skill (via request payload or config),
     analysis should follow that selected skill alone instead of silently
     layering the old bull-trend baseline on top.
+
+    The baseline is language-bound: the Chat path used to inject the Chinese
+    A-share doctrine into every conversation regardless of ``REPORT_LANGUAGE``,
+    which made the agent apply T+1 and \u00b110% price-limit rules to US tickers.
     """
     if explicit_skill_selection:
         return ""
+    from src.report_language import normalize_report_language
+
+    # "ko" has no translated baseline; the analyzer already renders its
+    # prompts from the English templates, so follow that decision here.
+    if normalize_report_language(language) in ("en", "ko"):
+        return CORE_TRADING_SKILL_POLICY_EN
     return CORE_TRADING_SKILL_POLICY_ZH
 
 

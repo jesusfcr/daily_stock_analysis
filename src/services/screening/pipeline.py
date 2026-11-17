@@ -430,6 +430,7 @@ def screen(
             timeout_sec=config.llm_timeout_sec,
             max_tokens=config.llm_max_tokens,
             degradation=llm_prompt_degradation,
+            language=config.report_language,
         )
         degradation.extend(llm_prompt_degradation)
         picks = llm_result.picks

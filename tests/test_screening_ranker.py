@@ -646,3 +646,72 @@ def test_truncated_json_mode_still_succeeds_when_retry_also_fails() -> None:
     )
 
     assert len(attempts) == 2
+
+
+# --------------------------------------------------------------------------- #
+# Ranking prompt language follows REPORT_LANGUAGE
+# --------------------------------------------------------------------------- #
+
+
+def test_ranking_prompt_and_system_message_follow_report_language() -> None:
+    from src.services.screening import ranker
+
+    cands = [Pick(rank=1, code="NVDA", name="NVIDIA", final_score=90.0, screen_score=90.0)]
+
+    zh_prompt = ranker._build_ranking_prompt(cands, "hints", "ctx", language="zh")
+    en_prompt = ranker._build_ranking_prompt(cands, "hints", "ctx", language="en")
+
+    assert "你是一个专业的股票研究员" in zh_prompt
+    assert "You are a professional equity researcher" in en_prompt
+    assert "你是一个专业的股票研究员" not in en_prompt
+
+    assert "你仅执行股票候选池内的相对排序" in ranker._ranking_system_instructions("zh")
+    assert "You only perform relative ranking" in ranker._ranking_system_instructions("en")
+    # Korean has no translated baseline; it renders from the English templates.
+    assert "You only perform relative ranking" in ranker._ranking_system_instructions("ko")
+
+
+def test_candidate_payload_is_identical_across_prompt_languages() -> None:
+    """Only the instructions may change; the untrusted data boundary must not."""
+    from src.services.screening import ranker
+
+    cands = [Pick(rank=1, code="NVDA", name="NVIDIA", final_score=90.0, screen_score=90.0)]
+    zh_prompt = ranker._build_ranking_prompt(cands, "hints", "ctx", language="zh")
+    en_prompt = ranker._build_ranking_prompt(cands, "hints", "ctx", language="en")
+
+    assert ranker._serialize_untrusted_data("ctx") in zh_prompt
+    assert ranker._serialize_untrusted_data("ctx") in en_prompt
+    assert "NVDA" in zh_prompt and "NVDA" in en_prompt
+
+
+def test_ranking_call_uses_localized_system_message(monkeypatch) -> None:
+    """The system message actually sent to the model must be localized."""
+    from src.services.screening import ranker
+
+    captured: list[list[dict]] = []
+
+    def fake_call(prompt, _api_key, _model, _base_url, **kwargs):
+        captured.append(kwargs.get("messages") or [])
+        return _valid_json()
+
+    sent = {}
+
+    def fake_call_llm(prompt, api_key, model, base_url, **kwargs):
+        sent["language"] = kwargs.get("language")
+        return "not json"
+
+    monkeypatch.setattr(ranker, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(ranker, "_call_screening_litellm_completion", lambda *a, **k: fake_call(*a, **k))
+
+    ranker.rank_candidates_with_metadata(
+        [Pick(rank=1, code="NVDA", name="NVIDIA", final_score=90.0, screen_score=90.0)],
+        "hints",
+        "key",
+        "model",
+        "",
+        min_coverage=0.0,
+        max_retries=0,
+        language="en",
+    )
+
+    assert sent["language"] == "en"

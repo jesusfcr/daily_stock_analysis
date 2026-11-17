@@ -261,3 +261,40 @@ class EnglishAnalyzeMessagesTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChatDefaultSkillBaselineLanguageTest(unittest.TestCase):
+    """The Chat path must not inject the Chinese A-share baseline into English runs."""
+
+    def test_chat_baseline_follows_report_language(self) -> None:
+        from src.agent.skills.defaults import (
+            CORE_TRADING_SKILL_POLICY_EN,
+            CORE_TRADING_SKILL_POLICY_ZH,
+            get_default_trading_skill_policy,
+        )
+
+        self.assertEqual(
+            get_default_trading_skill_policy(explicit_skill_selection=False, language="zh"),
+            CORE_TRADING_SKILL_POLICY_ZH,
+        )
+        for language in ("en", "en-US", "english", "ko"):
+            self.assertEqual(
+                get_default_trading_skill_policy(explicit_skill_selection=False, language=language),
+                CORE_TRADING_SKILL_POLICY_EN,
+                language,
+            )
+
+    def test_explicit_skill_selection_still_disables_the_baseline(self) -> None:
+        from src.agent.skills.defaults import get_default_trading_skill_policy
+
+        for language in ("zh", "en"):
+            self.assertEqual(
+                get_default_trading_skill_policy(explicit_skill_selection=True, language=language),
+                "",
+            )
+
+    def test_english_chat_baseline_has_no_chinese_text(self) -> None:
+        from src.agent.skills.defaults import get_default_trading_skill_policy
+
+        policy = get_default_trading_skill_policy(explicit_skill_selection=False, language="en")
+        self.assertEqual(_cjk_chars(policy), "")
