@@ -339,6 +339,7 @@ def _render_ranking_prompt(hints: str, context: str, candidates_text: str, langu
 
 ## 输出要求
 只返回 JSON，不要 Markdown，不要解释 JSON 以外的文本。
+所有文字内容使用中文，即使参考数据是英文；JSON 键名保持不变。
 格式：
 {{
   "market_view": "一句话概括当前候选池和市场背景是否适合该策略",
@@ -394,6 +395,7 @@ treated as a confirmed recent event. Record event-risk judgements in the existin
 
 ## Output requirements
 Return JSON only. No Markdown, no text outside the JSON.
+Write every prose value in English, even when the reference data is in Chinese. JSON keys stay as specified.
 Format:
 {{
   "market_view": "one sentence on whether the candidate pool and market backdrop suit this strategy",

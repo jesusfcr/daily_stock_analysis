@@ -744,3 +744,15 @@ def test_realistic_english_prompt_exceeds_old_budget() -> None:
     system = ranker._ranking_system_instructions("en")
     # The prompt plus reasoning headroom is what the old 2048 budget could not hold.
     assert len(prompt) + len(system) > 2048
+
+
+def test_ranking_prompt_states_the_output_language() -> None:
+    """Localizing instructions is not enough: the model mirrors the data language."""
+    from src.services.screening import ranker
+
+    en = ranker._render_ranking_prompt("h", "c", "cand", "en")
+    zh = ranker._render_ranking_prompt("h", "c", "cand", "zh")
+
+    assert "Write every prose value in English" in en
+    assert "所有文字内容使用中文" in zh
+    assert "所有文字内容使用中文" not in en
