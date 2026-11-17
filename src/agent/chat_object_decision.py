@@ -116,6 +116,18 @@ _SWITCHES = {"换成", "改看", "切换到"}
 _CLAUSE = re.compile(r"[，。！？!?；;,\n]")
 _ASIDE = re.compile(r"[，。！？!?；;,\n]|顺带|顺便|另外|然后|并(?:且)?(?:比较|对比)")
 _OBJECT_QUESTION = re.compile(r"\s*(?:现在|目前|当前)?(?:还)?(?:(?:能|可以|适合|值得)(?:买|卖|持有|投资)|(?:有)?什么|怎么样|如何)")
+# English question openers that bind the subject of a single-stock question.
+# Deliberately narrow: only question words followed by a linking verb, or
+# explicit request verbs. Free-form English prose is NOT a confirmation bypass.
+_ENGLISH_QUESTION_PREFIX = re.compile(
+    r"\s*(?:"
+    r"(?:why|what|how|when|where)\s+(?:is|are|was|were|did|does|has|have)\s+"
+    r"|(?:what|how)\s+about\s+"
+    r"|(?:what\s+happened\s+to)\s+"
+    r"|(?:tell\s+me\s+about|analyze|analyse|check|look\s+at|examine|research)\s+"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _qualification(text: str, operation) -> tuple[str, str]:
@@ -239,8 +251,15 @@ def decide_chat_object(message: str, current: Optional[StockIdentity], registry:
     # unique incidental mention in the whole message.
     if not denied:
         for subject in mentions:
-            if not re.fullmatch(r"\s*(?:请问\s*)?", text[:subject.start]):
+            prefix = text[:subject.start]
+            chinese_prefix = re.fullmatch(r"\s*(?:请问\s*)?", prefix) is not None
+            english_prefix = _ENGLISH_QUESTION_PREFIX.fullmatch(prefix) is not None
+            if not (chinese_prefix or english_prefix):
                 continue
+            if english_prefix:
+                if subject.identity is None:
+                    return ObjectDecision("clarify")
+                return ObjectDecision("confirm", target=subject, changes_target=True)
             question = _OBJECT_QUESTION.match(text, subject.end)
             if question is not None:
                 qualification, _prefix = _qualification(text, question)

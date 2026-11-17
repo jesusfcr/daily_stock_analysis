@@ -2329,6 +2329,29 @@ def test_full_registered_name_owns_embedded_mentions(bundled_chat_stock_index, m
         assert {identity.stock_code for identity in decision.participants} == {"600584", "600900"}
 
 
+@pytest.mark.parametrize("message,kind,codes", [
+    ("Why is UNH down 5% today?", "confirm", ("UNH",)),
+    ("what about MSFT", "confirm", ("MSFT",)),
+    ("tell me about NVDA", "confirm", ("NVDA",)),
+    ("check AAPL", "confirm", ("AAPL",)),
+    ("analyze TSLA", "confirm", ("TSLA",)),
+    ("UNH vs ELV vs CI vs HUM vs CVS", "compare", ("UNH", "ELV", "CI", "HUM", "CVS")),
+    ("check peers ELV CI HUM CVS", "compare", ("ELV", "CI", "HUM", "CVS")),
+    ("UNH versus ELV", "compare", ("UNH", "ELV")),
+])
+def test_english_chat_targets_confirm_and_compare(bundled_chat_stock_index, message, kind, codes):
+    from src.agent.chat_object_decision import decide_chat_object
+    from src.services.agent_chat_session_service import _stock_lookup
+
+    registry, lookup = _stock_lookup()
+    decision = decide_chat_object(message, None, registry, lookup)
+    assert decision.kind == kind
+    if kind == "confirm":
+        assert decision.target.identity.stock_code in codes
+    else:
+        assert {identity.stock_code for identity in decision.participants} == set(codes)
+
+
 @pytest.fixture
 def actual_bundled_chat_api(actual_chat_api, bundled_chat_stock_index):
     # Keep the real HTTP/session/executor chain; only the model boundary is

@@ -25,7 +25,7 @@ SWITCH_CLEANUP_KEYS = {
     "market_phase_context",
 }
 
-_STRONG_COMPARE_PATTERN = re.compile(r"比较|对比|vs\b|和[^，。,.!?！？]{0,40}比", re.IGNORECASE)
+_STRONG_COMPARE_PATTERN = re.compile(r"比较|对比|vs\b|versus\b|compared\s+(?:to|with)|和[^，。,.!?！？]{0,40}比", re.IGNORECASE)
 _WEAK_COMPARE_HINT_PATTERN = re.compile(r"差异(?!化)|区别|不同|相比|对照|比一比")
 _CHOICE_COMPARE_PATTERN = re.compile(r"哪个|哪只|哪一个|谁更|更值得|更适合|怎么选|选哪|二选一")
 _LINKED_COMPARE_PATTERN = re.compile(

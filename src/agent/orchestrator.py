@@ -2220,6 +2220,8 @@ _COMMON_WORDS: set[str] = {
     "HELLO", "PLEASE", "THANKS", "CHECK", "LOOK", "THINK",
     "MAYBE", "GUESS", "TELL", "SHOW", "WHAT", "WHATS",
     "WHY", "WHEN", "HOWDY", "HEY", "HI",
+    # English comparison / operation words that double as valid tickers
+    "VS", "VERSUS", "PEERS", "PEER", "COMPARE", "COMPARED", "COMPARISON", "AGAINST",
 }
 
 _LOWERCASE_TICKER_HINTS = re.compile(
