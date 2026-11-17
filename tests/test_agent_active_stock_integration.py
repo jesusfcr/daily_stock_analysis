@@ -2409,6 +2409,24 @@ def test_single_mention_binding_keeps_guards(bundled_chat_stock_index, message, 
     assert decide_chat_object(message, None, registry, lookup).kind == kind
 
 
+@pytest.mark.parametrize("message", [
+    # The Chat registry accepts any uppercase token as a code, so these resolve
+    # as tickers. Binding must depend on the shipped catalogue, not on an
+    # acronym deny-list (upstream rejected PR #2011 for exactly that reason).
+    "What does the latest CPI print mean for stocks?",
+    "How will the FOMC decision affect the market?",
+    "Is the SEC investigation a risk?",
+    "What is GDP growth doing?",
+    "解释一下CPI",
+])
+def test_macro_acronyms_are_not_bound_as_tickers(bundled_chat_stock_index, message):
+    from src.agent.chat_object_decision import decide_chat_object
+    from src.services.agent_chat_session_service import _stock_lookup
+
+    registry, lookup = _stock_lookup()
+    assert decide_chat_object(message, None, registry, lookup).kind == "maintain"
+
+
 @pytest.fixture
 def actual_bundled_chat_api(actual_chat_api, bundled_chat_stock_index):
     # Keep the real HTTP/session/executor chain; only the model boundary is

@@ -49,6 +49,19 @@ def validate_chat_identity(token: str, registry: IndexRegistry, lookup: dict) ->
     return identity
 
 
+def _is_catalogued(identity: Optional[StockIdentity], lookup: dict) -> bool:
+    """True when the code really exists in the shipped catalogue.
+
+    The Chat registry accepts any uppercase token as a code, so ``CPI``, ``FOMC``
+    or ``SEC`` resolve just like ``NVDA`` does. Binding on that alone would turn
+    a macro question into a fake-ticker lookup. The catalogue is the stable
+    signal; an acronym deny-list only moves the problem.
+    """
+    if identity is None or not isinstance(lookup, dict):
+        return False
+    return identity.stock_code.upper() in (lookup.get("codes") or {})
+
+
 def object_mentions(text: str, registry: IndexRegistry, lookup: dict) -> tuple[ObjectMention, ...]:
     """Retain failed/ambiguous evidence at its own location, not a global flag."""
     mentions = []
@@ -257,6 +270,8 @@ def decide_chat_object(message: str, current: Optional[StockIdentity], registry:
             if not (chinese_prefix or english_prefix):
                 continue
             if english_prefix:
+                if not _is_catalogued(subject.identity, lookup):
+                    continue
                 if subject.identity is None:
                     return ObjectDecision("clarify")
                 return ObjectDecision("confirm", target=subject, changes_target=True)
@@ -289,6 +304,7 @@ def decide_chat_object(message: str, current: Optional[StockIdentity], registry:
     # then refuses with `stock_scope_violation` (reason `stock_scope_required`),
     # so a fresh session cannot answer anything at all. The rules above still
     # refuse to hijack an *existing* target from incidental prose.
-    if current is None and not denied and len(mentions) == 1 and mentions[0].identity is not None:
+    if (current is None and not denied and len(mentions) == 1
+            and _is_catalogued(mentions[0].identity, lookup)):
         return ObjectDecision("confirm", target=mentions[0], changes_target=True)
     return ObjectDecision("maintain")
