@@ -4,6 +4,7 @@ Unit tests for SearXNG search provider public-instance rotation and failover.
 """
 
 import sys
+import threading
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
@@ -547,3 +548,51 @@ class TestSearXNGPublishedDateFallback(unittest.TestCase):
         self.assertTrue(resp.success)
         self.assertEqual(len(resp.results), 1)
         self.assertRegex(resp.results[0].published_date or "", r"^\d{4}-\d{2}-\d{2}$")
+
+
+class TestStockNewsPassesNewsCategory(unittest.TestCase):
+    """The stock-news flow (not just topic news) must ask for the news category.
+
+    Regression: the category was wired into ``search_topic_news`` only, so
+    ``search_stock_news`` kept hitting general engines and every result came
+    back undated and was dropped.
+    """
+
+    def test_search_stock_news_requests_the_news_category(self):
+        from src.search_service import (
+            SearXNGSearchProvider,
+            SearchResponse,
+            SearchResult,
+            SearchService,
+        )
+
+        SearXNGSearchProvider.reset_public_instance_cache()
+        service = SearchService(
+            searxng_base_urls=["https://searx.example.org"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        captured = {}
+
+        def fake_search(query, max_results=5, days=7, **kwargs):
+            captured.update(kwargs)
+            return SearchResponse(
+                query=query,
+                results=[SearchResult(
+                    title="NVIDIA earnings preview",
+                    snippet="snippet",
+                    url="https://example.com/nvda",
+                    source="example.com",
+                    published_date=datetime.now().date().isoformat(),
+                )],
+                provider="SearXNG",
+                success=True,
+            )
+
+        provider = next(p for p in service._providers if isinstance(p, SearXNGSearchProvider))
+        provider.search = fake_search
+
+        service.search_stock_news("NVDA", "NVIDIA", max_results=5)
+
+        self.assertEqual(captured.get("categories"), "news")

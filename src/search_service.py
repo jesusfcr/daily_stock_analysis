@@ -4185,6 +4185,10 @@ class SearchService:
                 search_kwargs: Dict[str, Any] = {}
                 if isinstance(provider, TavilySearchProvider):
                     search_kwargs["topic"] = "news"
+                elif isinstance(provider, SearXNGSearchProvider):
+                    # General SearXNG engines return undated hub pages, which the
+                    # recency filter drops; the news category returns dated items.
+                    search_kwargs["categories"] = "news"
                 elif isinstance(provider, BraveSearchProvider):
                     search_kwargs.update(
                         self._brave_search_locale(
