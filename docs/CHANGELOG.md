@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 美股选股快照缓存每股收益、每股净资产与行业（`us_fundamentals_cache.json`，与股本缓存同开关与 TTL），PE/PB 按当日价格重算；每次最多刷新 150 个过期标的，刷新失败保留上次值。修复 Yahoo `Ticker.info` 限流（HTTP 429）后 PE/PB 全部为空、value 因子退化为常数、带 PE 条件的策略结果为零的问题。
+- [改进] Web 选股默认返回数量由 3 调整为 10，保持在 LLM 排序窗口（12）内。
 - [修复] 选股、告警与个股分析报告统一使用同一 Wilder RSI（`src/utils/rsi.py`，基于 `fin-primitives`，以前 period 个涨跌幅的简单均值起算，与 TA-Lib 一致）：选股不再使用简单滚动均值，告警与报告不再以首行零涨跌幅起算 ewm，短历史下三处的超买/超卖判断不再出现分歧。预热期与无波动时仍为中性值 50；RSI 告警不再用预热占位值判断穿越，最少历史改为 period+2 根。
 - [文档] 将 AlphaSift 与 AlphaEvo 的项目入口前移至 README 产品预览之后、功能特性之前，以 `[!TIP]` 提示框展示，同步简体、英文与繁体版本。
 
