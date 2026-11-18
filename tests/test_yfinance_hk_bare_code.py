@@ -12,6 +12,42 @@ from unittest.mock import MagicMock, patch
 from data_provider.yfinance_fetcher import YfinanceFetcher
 
 
+class TestUsClassShareToYahooForm:
+    """US class shares use a dot internally but a dash on Yahoo (BRK.B -> BRK-B)."""
+
+    def test_class_share_converts_to_dash(self) -> None:
+        assert YfinanceFetcher()._convert_stock_code("BRK.B") == "BRK-B"
+        assert YfinanceFetcher()._convert_stock_code("BF.B") == "BF-B"
+        assert YfinanceFetcher()._convert_stock_code("HEI.A") == "HEI-A"
+
+    def test_plain_us_ticker_unchanged(self) -> None:
+        assert YfinanceFetcher()._convert_stock_code("AAPL") == "AAPL"
+        assert YfinanceFetcher()._convert_stock_code("msft") == "MSFT"
+
+
+class TestUsClassShareRealtimePath:
+    @patch("yfinance.Ticker")
+    def test_brk_b_realtime_uses_dash_symbol_but_canonical_code(self, ticker_factory: MagicMock) -> None:
+        ticker = ticker_factory.return_value
+        ticker.fast_info = SimpleNamespace(
+            lastPrice=400.0,
+            previousClose=398.0,
+            open=399.0,
+            dayHigh=401.0,
+            dayLow=397.0,
+            lastVolume=1000,
+            marketCap=None,
+        )
+        ticker.info = {"shortName": "Berkshire Hathaway", "currency": "USD"}
+
+        quote = YfinanceFetcher().get_realtime_quote("BRK.B")
+
+        ticker_factory.assert_called_once_with("BRK-B")
+        assert quote is not None
+        assert quote.code == "BRK.B"
+        assert quote.market == "us"
+
+
 class TestHKPrefixStillRoutesToHK:
     """Existing HK-prefix behaviour must remain unchanged."""
 
@@ -43,7 +79,7 @@ class TestHKPrefixStillRoutesToHK:
 
         ticker_factory.assert_called_once_with("0700.HK")
         assert quote is not None
-        assert quote.code == "0700.HK"
+        assert quote.code == "HK00700"
         assert quote.market == "hk"
         assert quote.currency == "HKD"
 

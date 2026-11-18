@@ -57,6 +57,10 @@ class TestYfinanceSymbolConversion(unittest.TestCase):
         self.assertEqual(_convert_to_yf_symbol("0700.HK"), "0700.HK")
         self.assertEqual(_convert_to_yf_symbol("600519.SS"), "600519.SS")
 
+    def test_us_class_share_dot_to_dash(self) -> None:
+        self.assertEqual(_convert_to_yf_symbol("BRK.B"), "BRK-B")
+        self.assertEqual(_convert_to_yf_symbol("BF.B"), "BF-B")
+
     def test_empty(self) -> None:
         self.assertEqual(_convert_to_yf_symbol(""), "")
 

@@ -13,8 +13,8 @@
 
 import re
 
-# 美股代码正则：1-5 个大写字母，可选 .X 后缀（如 BRK.B）
-_US_STOCK_PATTERN = re.compile(r'^[A-Z]{1,5}(\.[A-Z])?$')
+# 美股代码正则：1-5 个大写字母，可选 .X / -X 类股后缀（如 BRK.B / BRK-B）
+_US_STOCK_PATTERN = re.compile(r'^[A-Z]{1,5}([.\-][A-Z])?$')
 
 
 # 用户输入 -> (Yahoo Finance 符号, 中文名称)
@@ -66,7 +66,7 @@ def is_us_stock_code(code: str) -> bool:
     """
     判断代码是否为美股股票符号（排除美股指数）。
 
-    美股股票代码为 1-5 个大写字母，可选 .X 后缀如 BRK.B。
+    美股股票代码为 1-5 个大写字母，可选 .X / -X 类股后缀如 BRK.B / BRK-B。
     美股指数（SPX、DJI 等）明确排除。
 
     Args:
@@ -92,6 +92,21 @@ def is_us_stock_code(code: str) -> bool:
     if normalized in US_INDEX_MAPPING:
         return False
     return bool(_US_STOCK_PATTERN.match(normalized))
+
+
+def to_yahoo_us_symbol(code: str) -> str:
+    """Map DSA's internal US symbol to Yahoo's ticker form.
+
+    DSA stores class shares with a dot (``BRK.B``), but Yahoo's ticker uses a
+    dash (``BRK-B``). This translates a dotted US class share to the dash form
+    and leaves everything else unchanged (``BRK-B``, ``AAPL``, ``7203.T``).
+    """
+    normalized = (code or "").strip().upper()
+    if not is_us_stock_code(normalized):
+        return normalized
+    if "." in normalized:
+        return normalized.replace(".", "-")
+    return normalized
 
 
 def get_us_index_yf_symbol(code: str) -> tuple:

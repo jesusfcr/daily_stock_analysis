@@ -33,6 +33,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from data_provider.us_index_mapping import to_yahoo_us_symbol
+
 logger = logging.getLogger(__name__)
 
 
@@ -142,7 +144,8 @@ def _convert_to_yf_symbol(stock_code: str) -> str:
         digits = code[2:].lstrip("0") or "0"
         return f"{digits.zfill(4)}.HK"
     if "." in code:
-        return code
+        # US class shares use a dot internally (BRK.B) but a dash on Yahoo (BRK-B).
+        return to_yahoo_us_symbol(code)
     # Assume US ticker by default for non-HK / non-CN callers
     return code
 

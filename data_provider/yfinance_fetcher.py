@@ -33,7 +33,7 @@ from tenacity import (
 
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, _is_hk_market, is_bse_code
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
-from .us_index_mapping import get_us_index_yf_symbol, is_us_stock_code
+from .us_index_mapping import get_us_index_yf_symbol, is_us_stock_code, to_yahoo_us_symbol
 from .yfinance_fundamental_adapter import _safe_float
 from src.services.market_symbol_utils import get_suffix_market, is_suffix_market_symbol
 
@@ -126,10 +126,10 @@ class YfinanceFetcher(BaseFetcher):
             logger.debug(f"识别为美股指数: {code} -> {yf_symbol}")
             return yf_symbol
 
-        # 美股：1-5 个大写字母（可选 .X 后缀），原样返回
+        # 美股：1-5 个大写字母（可选 .X 后缀），转换为 Yahoo 类股形式（BRK.B -> BRK-B）
         if is_us_stock_code(code):
             logger.debug(f"识别为美股代码: {code}")
-            return code
+            return to_yahoo_us_symbol(code)
 
         # 日股/韩股/台股 MVP：显式 Yahoo Finance suffix-only 代码，原样传给 Yahoo。
         if self._is_jp_kr_suffix_stock(code) or self._is_tw_suffix_stock(code):
@@ -541,7 +541,7 @@ class YfinanceFetcher(BaseFetcher):
         Stooq 提供的是最新交易日行情，精度不如分时实时接口，但在 Yahoo / yfinance
         被限流时，至少能为 Web UI 提供可用价格；若可获取到昨收价，则同时提供涨跌幅等衍生指标。
         """
-        symbol = stock_code.strip().upper()
+        symbol = to_yahoo_us_symbol(stock_code.strip().upper())
         stooq_symbol = f"{symbol.lower()}.us"
         url = f"https://stooq.com/q/l/?s={stooq_symbol}"
         request = Request(
@@ -659,7 +659,7 @@ class YfinanceFetcher(BaseFetcher):
                 amplitude = ((high - low) / prev_close) * 100
 
             quote = UnifiedRealtimeQuote(
-                code=symbol,
+                code=stock_code.strip().upper(),
                 name=STOCK_NAME_MAP.get(symbol, ''),
                 source=RealtimeSource.STOOQ,
                 price=price,
@@ -827,8 +827,12 @@ class YfinanceFetcher(BaseFetcher):
 
         try:
             symbol = self._convert_stock_code(stock_code)
-            is_us_symbol = self._is_us_stock(symbol)
-            suffix_market = get_suffix_market(symbol)
+            # Keep identity predicates on the canonical input code, not the
+            # provider symbol: ``_convert_stock_code`` turns BRK.B into BRK-B,
+            # which ``is_us_stock_code`` would otherwise reject (dropping the
+            # ``us`` market tag and the Stooq fallback).
+            is_us_symbol = self._is_us_stock(stock_code)
+            suffix_market = get_suffix_market(stock_code)
             logger.debug(f"[Yfinance] 获取 {symbol} 实时行情")
 
             ticker = yf.Ticker(symbol)
@@ -858,7 +862,7 @@ class YfinanceFetcher(BaseFetcher):
                 if hist.empty:
                     if is_us_symbol:
                         logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据，尝试 Stooq 兜底")
-                        return self._get_us_stock_quote_from_stooq(symbol)
+                        return self._get_us_stock_quote_from_stooq(stock_code)
                     logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据")
                     return None
 
@@ -943,7 +947,7 @@ class YfinanceFetcher(BaseFetcher):
                 if value is None
             ]
             quote = UnifiedRealtimeQuote(
-                code=symbol,
+                code=stock_code.strip().upper(),
                 name=name,
                 source=RealtimeSource.FALLBACK,
                 market=suffix_market or ("hk" if _is_hk_market(stock_code) else "us" if is_us_symbol else None),

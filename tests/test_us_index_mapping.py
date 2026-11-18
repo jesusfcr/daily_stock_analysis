@@ -13,6 +13,7 @@ from us_index_mapping import (
     is_us_index_code,
     is_us_stock_code,
     get_us_index_yf_symbol,
+    to_yahoo_us_symbol,
     US_INDEX_MAPPING,
 )
 
@@ -87,6 +88,11 @@ class TestIsUsStockCode(unittest.TestCase):
         """Stock codes with dot suffix (e.g. BRK.B) should return True"""
         self.assertTrue(is_us_stock_code('BRK.B'))
         self.assertTrue(is_us_stock_code('BRK.A'))
+
+    def test_stock_with_dash_suffix(self):
+        """Yahoo's class-share dash form (BRK-B) should also return True"""
+        self.assertTrue(is_us_stock_code('BRK-B'))
+        self.assertTrue(is_us_stock_code('BF-B'))
 
     def test_case_insensitive(self):
         """Stock code matching should be case-insensitive"""
@@ -205,6 +211,34 @@ class TestUsMappingCompleteness(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertIsNotNone(symbol)
                 self.assertTrue(symbol.startswith('^'), f"{code}'s YF symbol should start with ^")
+
+
+class TestToYahooUsSymbol(unittest.TestCase):
+    """Tests for to_yahoo_us_symbol()"""
+
+    def test_plain_us_passthrough(self):
+        self.assertEqual(to_yahoo_us_symbol("AAPL"), "AAPL")
+        self.assertEqual(to_yahoo_us_symbol(" msft "), "MSFT")
+
+    def test_class_share_dot_to_dash(self):
+        """Yahoo expects BRK-B, not DSA's internal BRK.B."""
+        self.assertEqual(to_yahoo_us_symbol("BRK.B"), "BRK-B")
+        self.assertEqual(to_yahoo_us_symbol("BF.B"), "BF-B")
+        self.assertEqual(to_yahoo_us_symbol("HEI.A"), "HEI-A")
+        self.assertEqual(to_yahoo_us_symbol("brk.b"), "BRK-B")
+
+    def test_dash_form_idempotent(self):
+        self.assertEqual(to_yahoo_us_symbol("BRK-B"), "BRK-B")
+        self.assertEqual(to_yahoo_us_symbol("BF-B"), "BF-B")
+
+    def test_non_us_symbols_unchanged(self):
+        self.assertEqual(to_yahoo_us_symbol("7203.T"), "7203.T")
+        self.assertEqual(to_yahoo_us_symbol("0700.HK"), "0700.HK")
+        self.assertEqual(to_yahoo_us_symbol("600519.SS"), "600519.SS")
+
+    def test_us_index_unchanged(self):
+        # Index codes are rejected by is_us_stock_code, so they pass through.
+        self.assertEqual(to_yahoo_us_symbol("SPX"), "SPX")
 
 
 if __name__ == '__main__':
