@@ -451,3 +451,99 @@ class TestSearXNGSearchProvider(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSearXNGNewsCategory(unittest.TestCase):
+    """News queries must ask SearXNG for the news category.
+
+    General instances return undated hub pages ("Latest Stock News | ..."), and
+    the recency filter then drops every one of them, so stock news came back
+    empty. News engines carry ``publishedDate`` but only run for that category.
+    """
+
+    @staticmethod
+    def _provider(urls=("https://searx.example.org",)):
+        from src.search_service import SearXNGSearchProvider
+
+        SearXNGSearchProvider.reset_public_instance_cache()
+        return SearXNGSearchProvider(list(urls))
+
+    @patch("src.search_service._get_with_retry")
+    def test_news_category_is_sent_when_requested(self, mock_get):
+        mock_get.return_value = unittest.mock.MagicMock(
+            status_code=200, json=unittest.mock.MagicMock(return_value={"results": []})
+        )
+
+        self._provider().search("NVDA stock latest news", max_results=5, days=3, categories="news")
+
+        _args, kwargs = mock_get.call_args
+        self.assertEqual(kwargs["params"]["categories"], "news")
+
+    @patch("src.search_service._get_with_retry")
+    def test_category_is_omitted_by_default(self, mock_get):
+        mock_get.return_value = unittest.mock.MagicMock(
+            status_code=200, json=unittest.mock.MagicMock(return_value={"results": []})
+        )
+
+        self._provider().search("NVDA stock", max_results=5, days=7)
+
+        _args, kwargs = mock_get.call_args
+        self.assertNotIn("categories", kwargs["params"])
+
+
+class TestSearXNGPublishedDateFallback(unittest.TestCase):
+    """Engines that only report a relative age must still yield a date.
+
+    ``bing news`` returns ``metadata: "13 hours ago | Euronews on MSN"`` and no
+    ``publishedDate``; without this fallback the recency filter drops the item.
+    """
+
+    def test_iso_published_date_is_kept(self):
+        from src.search_service import SearXNGSearchProvider
+
+        self.assertEqual(
+            SearXNGSearchProvider._searxng_published_date({"publishedDate": "2026-11-17T10:00:00Z"}),
+            "2026-11-17T10:00:00Z",
+        )
+
+    def test_relative_metadata_is_converted_to_a_date(self):
+        from src.search_service import SearXNGSearchProvider
+
+        value = SearXNGSearchProvider._searxng_published_date(
+            {"metadata": "13 hours ago | Euronews on MSN"}
+        )
+
+        self.assertRegex(value or "", r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_metadata_without_a_date_yields_none(self):
+        from src.search_service import SearXNGSearchProvider
+
+        self.assertIsNone(
+            SearXNGSearchProvider._searxng_published_date({"metadata": "Euronews on MSN"})
+        )
+        self.assertIsNone(SearXNGSearchProvider._searxng_published_date({}))
+
+    @patch("src.search_service._get_with_retry")
+    def test_search_maps_relative_metadata_into_published_date(self, mock_get):
+        mock_get.return_value = unittest.mock.MagicMock(
+            status_code=200,
+            json=unittest.mock.MagicMock(return_value={
+                "results": [{
+                    "title": "NVIDIA earnings preview",
+                    "url": "https://example.com/nvda",
+                    "content": "AI chip giant reports Tuesday.",
+                    "engine": "bing news",
+                    "metadata": "13 hours ago | Euronews on MSN",
+                }]
+            }),
+        )
+        from src.search_service import SearXNGSearchProvider
+
+        SearXNGSearchProvider.reset_public_instance_cache()
+        provider = SearXNGSearchProvider(["https://searx.example.org"])
+
+        resp = provider.search("NVDA earnings", max_results=5, days=7, categories="news")
+
+        self.assertTrue(resp.success)
+        self.assertEqual(len(resp.results), 1)
+        self.assertRegex(resp.results[0].published_date or "", r"^\d{4}-\d{2}-\d{2}$")

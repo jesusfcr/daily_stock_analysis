@@ -2031,6 +2031,31 @@ class SearXNGSearchProvider(BaseSearchProvider):
         ordered = pool[start:] + pool[:start]
         return ordered[:max_attempts]
 
+    @staticmethod
+    def _searxng_published_date(item: Dict[str, Any]) -> Optional[str]:
+        """Extract a publication date from a SearXNG result.
+
+        Not every engine fills ``publishedDate``. ``bing news`` reports a
+        relative age on a human line, e.g. ``"13 hours ago | Euronews on MSN"``,
+        so the date-bearing segment is taken and parsed relative to now. Without
+        this the recency filter sees an undated item and drops it.
+        """
+        published = item.get("publishedDate") or item.get("pubdate")
+        if published:
+            return str(published)
+
+        metadata = item.get("metadata")
+        if not isinstance(metadata, str) or not metadata.strip():
+            return None
+        # "13 hours ago | Euronews on MSN" -> "13 hours ago"
+        candidate = metadata.split("|", 1)[0].strip()
+        if not candidate:
+            return None
+        parsed = SearchService._parse_relative_news_date(candidate, datetime.now())
+        if parsed is not None:
+            return parsed.strftime("%Y-%m-%d")
+        return None
+
     def _do_search(  # type: ignore[override]
         self,
         query: str,
@@ -2038,6 +2063,7 @@ class SearXNGSearchProvider(BaseSearchProvider):
         max_results: int,
         days: int = 7,
         *,
+        categories: Optional[str] = None,
         timeout: int,
         retry_enabled: bool,
     ) -> SearchResponse:
@@ -2056,6 +2082,8 @@ class SearXNGSearchProvider(BaseSearchProvider):
                 "time_range": self._time_range(days),
                 "pageno": 1,
             }
+            if categories:
+                params["categories"] = categories
 
             request_get = _get_with_retry if retry_enabled else requests.get
             response = request_get(search_url, headers=headers, params=params, timeout=timeout)
@@ -2106,7 +2134,7 @@ class SearXNGSearchProvider(BaseSearchProvider):
                 url_val = item.get("url")
                 if not url_val:
                     continue
-                raw_published_date = item.get("publishedDate")
+                raw_published_date = self._searxng_published_date(item)
 
                 snippet = (item.get("content") or item.get("description") or "")[:500]
                 published_date = None
@@ -2168,8 +2196,20 @@ class SearXNGSearchProvider(BaseSearchProvider):
         except Exception:
             return "未知来源"
 
-    def search(self, query: str, max_results: int = 5, days: int = 7) -> SearchResponse:
-        """Execute SearXNG search with instance rotation and per-request failover."""
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        days: int = 7,
+        *,
+        categories: Optional[str] = None,
+    ) -> SearchResponse:
+        """Execute SearXNG search with instance rotation and per-request failover.
+
+        ``categories`` selects a SearXNG category for the request. News queries
+        pass ``"news"`` because general engines return undated hub pages, which
+        the recency filter then drops; news engines carry ``publishedDate``.
+        """
         start_time = time.time()
         if self._base_urls:
             candidates = self._rotate_candidates(
@@ -2211,6 +2251,7 @@ class SearXNGSearchProvider(BaseSearchProvider):
                 base_url,
                 max_results,
                 days=days,
+                categories=categories,
                 timeout=timeout,
                 retry_enabled=retry_enabled,
             )
@@ -3898,6 +3939,10 @@ class SearchService:
                 search_kwargs: Dict[str, Any] = {}
                 if isinstance(provider, TavilySearchProvider):
                     search_kwargs["topic"] = "news"
+                elif isinstance(provider, SearXNGSearchProvider):
+                    # General SearXNG engines return undated hub pages, which the
+                    # recency filter drops; the news category returns dated items.
+                    search_kwargs["categories"] = "news"
                 elif isinstance(provider, BraveSearchProvider):
                     search_kwargs.update(self._brave_search_locale("", prefer_chinese=prefer_chinese))
 
