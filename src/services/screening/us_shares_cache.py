@@ -32,6 +32,9 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 CACHE_FILENAME = "us_shares_cache.json"
+# Same file format, separate file: per-share EPS / book value / industry from
+# ``Ticker.info``. Kept apart so the two TTLs and failure modes stay independent.
+FUNDAMENTALS_CACHE_FILENAME = "us_fundamentals_cache.json"
 CACHE_VERSION = 1
 DEFAULT_TTL_DAYS = 7.0
 
@@ -118,6 +121,39 @@ class UsSharesCache:
         except (TypeError, ValueError):
             return False, None
         return (True, value) if value > 0 else (True, None)
+
+    def lookup_payload(
+        self, ticker: str, *, now: Optional[datetime] = None
+    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """Return ``(is_fresh, payload)`` for caches that store a field dict.
+
+        Unlike :meth:`lookup`, an expired entry still returns its payload: for
+        slow-moving fundamentals a week-old value beats none when the upstream
+        is rate-limiting, and the caller decides whether to refresh it.
+        """
+        key = str(ticker or "").strip().upper()
+        entry = self._entries.get(key) if key else None
+        if not isinstance(entry, dict):
+            return False, None
+        payload = {k: v for k, v in entry.items() if k != "fetched_at"}
+        fetched_at = _parse_timestamp(entry.get("fetched_at"))
+        if fetched_at is None:
+            return False, payload
+        reference = now or _utc_now()
+        fresh = self.ttl_seconds <= 0 or (reference - fetched_at).total_seconds() <= self.ttl_seconds
+        return fresh, payload
+
+    def record_payload(
+        self, ticker: str, payload: Dict[str, Any], *, now: Optional[datetime] = None
+    ) -> None:
+        """Remember one successful field-dict lookup."""
+        key = str(ticker or "").strip().upper()
+        if not key or not isinstance(payload, dict):
+            return
+        entry = dict(payload)
+        entry["fetched_at"] = (now or _utc_now()).isoformat().replace("+00:00", "Z")
+        self._entries[key] = entry
+        self._dirty = True
 
     def shares(self, ticker: str, *, now: Optional[datetime] = None) -> Optional[float]:
         """Cached share count, or ``None`` when unknown or expired."""

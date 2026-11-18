@@ -272,3 +272,94 @@ def test_enrich_info_runs_in_parallel_when_needed(monkeypatch):
 
     assert list(frame["pe_ratio"]) == [20.0] * len(tickers)
     assert list(frame["industry"]) == ["Tech"] * len(tickers)
+
+
+def _info_frame(tickers, price=100.0):
+    return pd.DataFrame({
+        "code": tickers,
+        "name": tickers,
+        "price": [price] * len(tickers),
+        "pe_ratio": [None] * len(tickers),
+        "pb_ratio": [None] * len(tickers),
+        "industry": [""] * len(tickers),
+    })
+
+
+def test_warm_fundamentals_cache_skips_info_and_reprices(monkeypatch, tmp_path):
+    """Cached EPS/book value must give today's PE/PB without any network call."""
+    from src.services.screening.us_shares_cache import UsSharesCache
+
+    cache = UsSharesCache.load(tmp_path / "f.json", ttl_seconds=86400)
+    cache.record_payload("AAPL", {"eps": 5.0, "bvps": 20.0, "industry": "Tech", "name": "Apple"})
+
+    def boom(symbol):
+        raise AssertionError("warm cache must not call yfinance")
+
+    monkeypatch.setattr(yf, "Ticker", boom)
+    frame = _info_frame(["AAPL"], price=100.0)
+    snapshot_us._enrich_info_fields(frame, fundamentals_cache=cache)
+
+    assert frame.at[0, "pe_ratio"] == 20.0   # 100 / 5, from today's price
+    assert frame.at[0, "pb_ratio"] == 5.0    # 100 / 20
+    assert frame.at[0, "industry"] == "Tech"
+
+
+def test_rate_limited_refresh_keeps_last_known_fundamentals(monkeypatch, tmp_path):
+    """A 429 on refresh must not wipe the value factor back to a constant."""
+    from datetime import datetime, timedelta, timezone
+
+    from src.services.screening.us_shares_cache import UsSharesCache
+
+    cache = UsSharesCache.load(tmp_path / "f.json", ttl_seconds=86400)
+    old = datetime.now(timezone.utc) - timedelta(days=3)
+    cache.record_payload("KO", {"eps": 2.5, "bvps": 10.0, "industry": "Beverages"}, now=old)
+
+    class RateLimited:
+        def __init__(self, symbol):
+            raise RuntimeError("Too Many Requests")
+
+    monkeypatch.setattr(yf, "Ticker", RateLimited)
+    frame = _info_frame(["KO"], price=60.0)
+    snapshot_us._enrich_info_fields(frame, fundamentals_cache=cache)
+
+    assert frame.at[0, "pe_ratio"] == 24.0
+    fresh, payload = cache.lookup_payload("KO")
+    assert fresh is False and payload["eps"] == 2.5   # not overwritten by the failure
+
+
+def test_info_refresh_is_capped_and_missing_go_first(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from src.services.screening.us_shares_cache import UsSharesCache
+
+    cache = UsSharesCache.load(tmp_path / "f.json", ttl_seconds=86400)
+    old = datetime.now(timezone.utc) - timedelta(days=3)
+    cache.record_payload("STALE", {"eps": 1.0, "bvps": 1.0}, now=old)
+
+    calls = []
+
+    class FakeTicker:
+        def __init__(self, symbol):
+            calls.append(symbol)
+            self.info = {"trailingEps": 4.0, "bookValue": 8.0, "industry": "X", "shortName": symbol}
+
+    monkeypatch.setattr(yf, "Ticker", FakeTicker)
+    frame = _info_frame(["STALE", "NEW1", "NEW2"], price=40.0)
+    snapshot_us._enrich_info_fields(frame, fundamentals_cache=cache, max_refresh=2, max_workers=1)
+
+    assert sorted(calls) == ["NEW1", "NEW2"]          # cap respected, missing first
+    assert list(frame["pe_ratio"]) == [40.0, 10.0, 10.0]  # STALE still priced from old EPS
+
+
+def test_loss_maker_gets_no_pe(monkeypatch, tmp_path):
+    """Negative EPS must not produce a negative PE that ranks as 'cheap'."""
+    from src.services.screening.us_shares_cache import UsSharesCache
+
+    cache = UsSharesCache.load(tmp_path / "f.json", ttl_seconds=86400)
+    cache.record_payload("LOSS", {"eps": -2.0, "bvps": 5.0})
+    monkeypatch.setattr(yf, "Ticker", lambda s: (_ for _ in ()).throw(AssertionError))
+    frame = _info_frame(["LOSS"], price=50.0)
+    snapshot_us._enrich_info_fields(frame, fundamentals_cache=cache)
+
+    assert pd.isna(frame.at[0, "pe_ratio"])
+    assert frame.at[0, "pb_ratio"] == 10.0

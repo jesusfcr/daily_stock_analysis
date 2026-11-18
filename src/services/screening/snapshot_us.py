@@ -265,19 +265,53 @@ def fetch_us_snapshot(
     df = df.dropna(subset=["price"])
     df = df[df["price"] > 0]
 
-    _enrich_info_fields(df)
+    _enrich_info_fields(df, fundamentals_cache=_fundamentals_cache_for(shares_cache))
 
     df.attrs["snapshot_source"] = "yfinance"
     logger.info("US snapshot: %d rows from yfinance", len(df))
     return df
 
 
-def _enrich_info_fields(df: pd.DataFrame, *, max_workers: int = 8) -> None:
+_MAX_INFO_REFRESH_PER_RUN = 150
+
+
+def _fundamentals_cache_for(shares_cache: UsSharesCache | None) -> UsSharesCache | None:
+    """Fundamentals cache living next to the shares cache, sharing its switch."""
+    if shares_cache is None:
+        return None
+    from src.services.screening.us_shares_cache import FUNDAMENTALS_CACHE_FILENAME
+
+    return UsSharesCache.load(
+        shares_cache.path.parent / FUNDAMENTALS_CACHE_FILENAME,
+        ttl_seconds=shares_cache.ttl_seconds,
+    )
+
+
+def _ratio(price: object, per_share: object) -> float | None:
+    try:
+        price_f, per_share_f = float(price), float(per_share)
+    except (TypeError, ValueError):
+        return None
+    if not (price_f > 0 and per_share_f > 0):
+        return None
+    return round(price_f / per_share_f, 4)
+
+
+def _enrich_info_fields(
+    df: pd.DataFrame,
+    *,
+    max_workers: int = 8,
+    fundamentals_cache: UsSharesCache | None = None,
+    max_refresh: int = _MAX_INFO_REFRESH_PER_RUN,
+) -> None:
     """Best-effort enrichment of pe_ratio, pb_ratio, industry from yfinance info.
 
-    ``Ticker.info`` is one HTTP round-trip per symbol. This used to run
-    sequentially over the whole universe, which dominated the snapshot phase
-    once the universe reached S&P 500 size.
+    ``Ticker.info`` is one HTTP round-trip per symbol and Yahoo rate-limits it
+    (HTTP 429) after a few full-universe passes, which silently turned the
+    ``value`` factor into a constant. With a cache, per-share EPS and book
+    value are stored and PE/PB are recomputed from today's price, so only
+    missing or expired symbols hit the network, at most ``max_refresh`` per
+    run; the rest of the expired ones keep their last known values.
     """
     import yfinance as yf
 
@@ -286,37 +320,63 @@ def _enrich_info_fields(df: pd.DataFrame, *, max_workers: int = 8) -> None:
         return
 
     tickers = [str(code) for code in df["code"].tolist()]
+    known: dict[str, dict] = {}
+    to_fetch = list(tickers)
+    if fundamentals_cache is not None:
+        missing: list[str] = []
+        stale: list[str] = []
+        for ticker in tickers:
+            fresh, payload = fundamentals_cache.lookup_payload(ticker)
+            if payload:
+                known[ticker] = payload
+            if not fresh:
+                (stale if payload else missing).append(ticker)
+        to_fetch = (missing + stale)[:max(0, max_refresh)]
 
     def _fetch(ticker: str) -> tuple[str, dict]:
         try:
             info = yf.Ticker(ticker).info
         except Exception:
             return ticker, {}
-        if not isinstance(info, dict):
+        if not isinstance(info, dict) or not info:
             return ticker, {}
         return ticker, {
-            "trailingPE": info.get("trailingPE"),
-            "priceToBook": info.get("priceToBook"),
+            "pe": info.get("trailingPE"),
+            "pb": info.get("priceToBook"),
+            "eps": info.get("trailingEps"),
+            "bvps": info.get("bookValue"),
             "industry": info.get("industry", ""),
-            "shortName": info.get("shortName", ticker),
+            "name": info.get("shortName", ticker),
         }
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        fetched = dict(pool.map(_fetch, tickers))
+    if to_fetch:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for ticker, payload in pool.map(_fetch, to_fetch):
+                if not payload:
+                    continue  # failed lookup: keep any stale value, retry next run
+                known[ticker] = payload
+                if fundamentals_cache is not None:
+                    fundamentals_cache.record_payload(ticker, payload)
+        if fundamentals_cache is not None:
+            fundamentals_cache.flush()
 
+    has_price = "price" in df.columns
     for idx in df.index:
         ticker = str(df.at[idx, "code"])
-        info = fetched.get(ticker) or {}
+        info = known.get(ticker)
         if not info:
             continue
+        price = df.at[idx, "price"] if has_price else None
         if pd.isna(df.at[idx, "pe_ratio"]) or df.at[idx, "pe_ratio"] == 0:
-            df.at[idx, "pe_ratio"] = info.get("trailingPE")
+            pe = _ratio(price, info.get("eps")) if info.get("eps") is not None else info.get("pe")
+            df.at[idx, "pe_ratio"] = pe
         if pd.isna(df.at[idx, "pb_ratio"]) or df.at[idx, "pb_ratio"] == 0:
-            df.at[idx, "pb_ratio"] = info.get("priceToBook")
+            pb = _ratio(price, info.get("bvps")) if info.get("bvps") is not None else info.get("pb")
+            df.at[idx, "pb_ratio"] = pb
         if not df.at[idx, "industry"]:
-            df.at[idx, "industry"] = info.get("industry", "")
+            df.at[idx, "industry"] = info.get("industry") or ""
         if not df.at[idx, "name"] or df.at[idx, "name"] == ticker:
-            df.at[idx, "name"] = info.get("shortName", ticker)
+            df.at[idx, "name"] = info.get("name") or ticker
 
 
 def fetch_daily_history_yfinance(

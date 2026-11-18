@@ -135,3 +135,18 @@ def test_build_places_the_file_under_data_dir(tmp_path):
 
     assert built is not None
     assert built.path == tmp_path / "data" / CACHE_FILENAME
+
+
+def test_payload_roundtrip_and_stale_payload_is_still_returned(tmp_path):
+    from datetime import timedelta
+
+    cache = UsSharesCache.load(tmp_path / "f.json", ttl_seconds=3600)
+    old = datetime.now(timezone.utc) - timedelta(hours=2)
+    cache.record_payload("ko", {"eps": 2.5, "industry": "Beverages"}, now=old)
+    assert cache.flush()
+
+    reloaded = UsSharesCache.load(tmp_path / "f.json", ttl_seconds=3600)
+    fresh, payload = reloaded.lookup_payload("KO")
+    assert fresh is False
+    assert payload == {"eps": 2.5, "industry": "Beverages"}
+    assert reloaded.lookup_payload("MISSING") == (False, None)
