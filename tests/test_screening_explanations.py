@@ -806,3 +806,36 @@ def test_failed_llm_ranking_does_not_invent_inferred_participation(monkeypatch):
     result = _attach_candidate_explanations(_normalize_candidate(ranked.picks[0], 1), factor_weights={"value": 1})
     assert not any(item["source"] == "llm" for item in result["why_selected"])
     assert result["explanation_quality"]["why_selected"] == "ok"
+
+
+@pytest.mark.parametrize("raw, expected", [
+    (None, 3),       # unset keeps the historical default
+    ("10", 10),
+    ("50", 12),      # capped at the LLM window
+    ("-1", 0),
+    ("abc", 3),      # invalid falls back instead of failing the run
+])
+def test_context_max_candidates_env(monkeypatch, raw, expected):
+    from src.services import screening_service as service
+
+    if raw is None:
+        monkeypatch.delenv("SCREENING_CONTEXT_MAX_CANDIDATES", raising=False)
+    else:
+        monkeypatch.setenv("SCREENING_CONTEXT_MAX_CANDIDATES", raw)
+    assert service._dsa_context_max_candidates() == expected
+
+
+def test_post_rank_enrichment_follows_context_limit(monkeypatch):
+    from src.services import screening_service as service
+
+    monkeypatch.setenv("SCREENING_CONTEXT_MAX_CANDIDATES", "5")
+    calls = []
+    monkeypatch.setattr(
+        service, "_build_dsa_candidate_context",
+        lambda candidate, **kw: calls.append(candidate["code"]) or {"dsa_context": {"enriched": True}},
+    )
+    candidates = [{"code": f"T{i}", "name": f"T{i}", "rank": i + 1} for i in range(8)]
+    _, meta = _enrich_candidates_with_dsa(candidates)
+
+    assert len(calls) == 5
+    assert meta["max_candidates"] == 5 and meta["requested_count"] == 5

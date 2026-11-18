@@ -94,6 +94,23 @@ _SCREENING_LITELLM_COMPLETION_ATTR = "_screening_litellm_completion_bridge"
 _SCREENING_LITELLM_COMPLETION_LOCK = threading.Lock()
 
 
+def _dsa_context_max_candidates() -> int:
+    """How many top candidates get DSA quote/fundamentals/news context.
+
+    Each one costs a news search, so this is a cost knob
+    (``SCREENING_CONTEXT_MAX_CANDIDATES``). Capped at the LLM window: context
+    for a candidate the ranker never sees would be paid for and discarded.
+    """
+    raw = _env_text(os.getenv("SCREENING_CONTEXT_MAX_CANDIDATES"))
+    try:
+        value = int(raw) if raw else DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES
+    except ValueError:
+        logger.warning("Invalid SCREENING_CONTEXT_MAX_CANDIDATES=%r; using %d",
+                       raw, DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES)
+        value = DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES
+    return max(0, min(value, DSA_SCREENING_LLM_MAX_CANDIDATES))
+
+
 def _safe_float(value: Any) -> Optional[float]:
     try:
         if value is None or value == "":
@@ -3027,7 +3044,7 @@ def _build_screening_context(
         "dsa": {
             "contract_version": "1",
             "mode": "pre_rank_research" if include_news else "pre_rank_light",
-            "max_candidates": DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES,
+            "max_candidates": _dsa_context_max_candidates(),
             "include_news": include_news,
             "news_max_results": 3 if include_news else 0,
             "capabilities": [
@@ -3517,7 +3534,8 @@ def _enrich_candidates_with_dsa(
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     enriched_count = 0
     warnings: List[str] = []
-    limit = min(len(candidates), DSA_ENRICHMENT_MAX_CANDIDATES)
+    max_candidates = _dsa_context_max_candidates()
+    limit = min(len(candidates), max_candidates)
 
     for index, candidate in enumerate(candidates):
         if index >= limit:
@@ -3569,7 +3587,7 @@ def _enrich_candidates_with_dsa(
 
     return candidates, {
         "enabled": True,
-        "max_candidates": DSA_ENRICHMENT_MAX_CANDIDATES,
+        "max_candidates": max_candidates,
         "requested_count": limit,
         "enriched_count": enriched_count,
         "warnings": _dedupe_strings(warnings),
