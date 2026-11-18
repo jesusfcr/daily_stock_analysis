@@ -223,7 +223,60 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Backfill start date (YYYY-MM-DD); default is the last ~400 days",
     )
     parser.add_argument("--dry-run", action="store_true", help="Parse and report without writing")
+    parser.add_argument(
+        "--no-refresh-prices",
+        action="store_true",
+        help="Skip refreshing daily price data for held positions",
+    )
     return parser.parse_args(argv)
+
+
+def refresh_held_position_prices(
+    account_id: Optional[int] = None,
+) -> Dict[str, object]:
+    """Refresh daily price data for the account's held positions.
+
+    Runs post-close so ``stock_daily`` holds today's final bar, which the
+    portfolio snapshot (``include_realtime=false``) uses to value positions.
+    """
+    from data_provider.base import DataFetcherManager
+    from src.storage import DatabaseManager
+
+    service = PortfolioService()
+    resolved_account_id = _resolve_account_id(service, account_id)
+    snapshot = service.get_portfolio_snapshot(
+        account_id=resolved_account_id,
+        cost_method="fifo",
+        include_realtime=False,
+        read_only=True,
+    )
+    symbols = [
+        position["symbol"]
+        for position in snapshot["accounts"][0]["positions"]
+    ]
+
+    fetcher = DataFetcherManager()
+    db = DatabaseManager.get_instance()
+    refreshed: List[str] = []
+    failed: List[str] = []
+    for code in symbols:
+        try:
+            df, source = fetcher.get_daily_data(code, days=30)
+            if df is not None and len(df):
+                db.save_daily_data(df, code, source)
+                refreshed.append(code)
+            else:
+                failed.append(code)
+        except Exception as exc:  # defensive: one symbol must not abort the refresh
+            logger.warning("refresh daily price failed for %s: %s", code, exc)
+            failed.append(code)
+    logger.info(
+        "持仓日线刷新完成: refreshed=%d/%d failed=%s",
+        len(refreshed),
+        len(symbols),
+        ",".join(failed) or "none",
+    )
+    return {"refreshed": refreshed, "failed": failed}
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -231,6 +284,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = _parse_args(argv)
     since = date.fromisoformat(args.since) if args.since else None
     summary = sync_ibkr_portfolio(account_id=args.account_id, since=since, dry_run=args.dry_run)
+    if not args.no_refresh_prices and not args.dry_run:
+        prices = refresh_held_position_prices(account_id=args.account_id)
+        summary["prices_refreshed"] = len(prices["refreshed"])
+        summary["prices_failed"] = len(prices["failed"])
     print(json.dumps(summary, ensure_ascii=False, default=str))
     return 0
 
