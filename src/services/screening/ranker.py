@@ -32,6 +32,9 @@ _DEFAULT_RANKING_PROMPT_MAX_CHARS = 24_000
 # deepseek-v4-flash: the ranking prompt needs ~2.6k completion tokens, and at
 # 2048 the whole budget goes to reasoning and the content comes back empty.
 _MIN_RANKING_MAX_TOKENS = 8192
+# A single truncation may double the budget, but never without a bound: the
+# retry exists to recover once, not to escalate on every bad response.
+_MAX_RETRY_MAX_TOKENS = 32768
 _PROMPT_TRIM_MARKER = "[prompt_trimmed]"
 _RANKING_RETRY_INSTRUCTIONS = (
     "\n\n上一次输出没有满足结构化覆盖率要求。"
@@ -1147,25 +1150,24 @@ def _apply_screening_litellm_generation_params(
     )
 
 
-def _is_json_mode_budget_exhausted(response: object) -> bool:
-    """True when a JSON-mode call spent its whole budget on reasoning tokens.
+def _is_truncated_completion(response: object) -> bool:
+    """True when the model ran out of output budget before finishing.
 
-    Reasoning models behind an OpenAI-compatible gateway can emit only
-    ``reasoning_content`` and return an empty ``content`` with
-    ``finish_reason="length"``. Nothing raises, so the provider-error fallback
-    below never fires and the caller just sees an empty ranking response.
+    Reasoning models behind an OpenAI-compatible gateway spend part of
+    ``max_tokens`` on ``reasoning_content`` before emitting any answer. Two
+    shapes result and both need the same retry:
+
+    * empty ``content`` — the whole budget went to reasoning;
+    * partially written JSON — the answer was cut off mid-object.
+
+    Nothing raises in either case, so the provider-error fallback never fires
+    and the caller only sees an unparseable or empty ranking response.
     """
     choices = _response_field(response, "choices")
     if not isinstance(choices, list) or not choices:
         return False
     choice = choices[0]
-    if str(_response_field(choice, "finish_reason") or "").strip().lower() != "length":
-        return False
-    message = _response_field(choice, "message")
-    content = _response_field(message, "content") if message is not None else None
-    if isinstance(content, list):
-        content = "".join(str(_response_field(part, "text") or "") for part in content)
-    return not str(content or "").strip()
+    return str(_response_field(choice, "finish_reason") or "").strip().lower() == "length"
 
 
 def _response_field(value: object, name: str):
@@ -1175,19 +1177,25 @@ def _response_field(value: object, name: str):
     return getattr(value, name, None)
 
 
-def _retry_without_json_mode(call_kwargs: dict[str, object]) -> dict[str, object]:
-    """Drop JSON mode and leave headroom for the reasoning tokens it caused.
+def _retry_budget_kwargs(call_kwargs: dict[str, object]) -> dict[str, object]:
+    """Drop JSON mode and give the retry room for the reasoning it caused.
 
     Doubling alone is not enough: a reasoning model spends several thousand
     tokens before it emits any JSON, so the retry needs a real floor rather
-    than a multiple of a budget that was already too small.
+    than a multiple of a budget that was already too small. The ceiling keeps a
+    single bad response from requesting an unbounded budget.
     """
     retry_kwargs = dict(call_kwargs)
     retry_kwargs.pop("response_format", None)
     budget = retry_kwargs.get("max_tokens")
     if isinstance(budget, int) and budget > 0:
-        retry_kwargs["max_tokens"] = max(budget * 2, _MIN_RANKING_MAX_TOKENS)
+        retry_kwargs["max_tokens"] = min(
+            max(budget * 2, _MIN_RANKING_MAX_TOKENS),
+            _MAX_RETRY_MAX_TOKENS,
+        )
     else:
+        # No budget was requested, so the floor is the whole answer: doubling a
+        # value the caller never sent would just guess.
         retry_kwargs["max_tokens"] = _MIN_RANKING_MAX_TOKENS
     return retry_kwargs
 
@@ -1219,29 +1227,34 @@ def _call_screening_litellm_completion(
         return call_litellm_with_param_recovery(
             call,
             model=model,
-            call_kwargs=_retry_without_json_mode(call_kwargs),
+            call_kwargs=_retry_budget_kwargs(call_kwargs),
             model_list=model_list,
             logger=logger,
             log_label="[Screening LiteLLM]",
         )
 
-    if "response_format" in call_kwargs and _is_json_mode_budget_exhausted(response):
-        # JSON mode is unusable on this model: it reasons until the budget runs
-        # out instead of answering. Retry without it rather than reporting an
-        # empty response and silently degrading to the local score.
-        logger.warning(
-            "[Screening LiteLLM] %s returned empty content in JSON mode "
-            "(finish_reason=length); retrying without response_format",
-            model,
-        )
-        return call_litellm_with_param_recovery(
-            call,
-            model=model,
-            call_kwargs=_retry_without_json_mode(call_kwargs),
-            model_list=model_list,
-            logger=logger,
-            log_label="[Screening LiteLLM]",
-        )
+    if _is_truncated_completion(response):
+        # The model ran out of budget instead of answering: either the whole
+        # window went to reasoning, or the JSON was cut off mid-object. Retry
+        # once with more room rather than reporting an empty/unparseable
+        # response and silently degrading to the local score. Guarded so a
+        # retry that cannot raise the budget or drop JSON mode does not loop.
+        retry_kwargs = _retry_budget_kwargs(call_kwargs)
+        if retry_kwargs != call_kwargs:
+            logger.warning(
+                "[Screening LiteLLM] %s hit the output budget (finish_reason=length); "
+                "retrying with max_tokens=%s and without response_format",
+                model,
+                retry_kwargs.get("max_tokens"),
+            )
+            return call_litellm_with_param_recovery(
+                call,
+                model=model,
+                call_kwargs=retry_kwargs,
+                model_list=model_list,
+                logger=logger,
+                log_label="[Screening LiteLLM]",
+            )
     return response
 
 

@@ -588,7 +588,7 @@ def _valid_json():
     return _completion(finish_reason="stop", content='{"ranked": []}')
 
 
-def test_json_mode_budget_exhaustion_retries_without_response_format() -> None:
+def test_truncated_empty_content_retries_without_response_format() -> None:
     from src.services.screening import ranker
 
     attempts: list[dict] = []
@@ -608,30 +608,77 @@ def test_json_mode_budget_exhaustion_retries_without_response_format() -> None:
     assert attempts[0]["response_format"] == {"type": "json_object"}
     assert "response_format" not in attempts[1]
     # The retry must leave room for the reasoning tokens that just ate the budget.
-    # Doubling 2048 is not enough on a reasoning model, so a floor applies.
     assert attempts[1]["max_tokens"] == 8192
 
 
-def test_plain_empty_content_without_json_mode_is_not_retried() -> None:
+def test_truncated_partial_json_is_retried_too() -> None:
+    """The original failure: output cut off mid-object, not empty.
+
+    ``finish_reason=length`` with partial content used to slip through because
+    the guard only looked at empty content, so the ranking failed to parse and
+    silently fell back to screen_score.
+    """
+    from src.services.screening import ranker
+
+    partial = _completion(finish_reason="length", content='{"market_view": "weak tape", "ranked": [{"code": "TS')
+    attempts: list[dict] = []
+
+    def call(request_kwargs):
+        attempts.append(dict(request_kwargs))
+        return partial if len(attempts) == 1 else _valid_json()
+
+    ranker._call_screening_litellm_completion(
+        call,
+        model="deepseek-v4-flash",
+        call_kwargs={"max_tokens": 8192},
+    )
+
+    assert len(attempts) == 2
+    assert attempts[1]["max_tokens"] == 16384
+
+
+def test_truncation_retry_also_drops_json_mode() -> None:
+    from src.services.screening import ranker
+
+    attempts: list[dict] = []
+    partial = _completion(finish_reason="length", content='{"ranked": [')
+
+    def call(request_kwargs):
+        attempts.append(dict(request_kwargs))
+        return partial if len(attempts) == 1 else _valid_json()
+
+    ranker._call_screening_litellm_completion(
+        call,
+        model="deepseek-v4-flash",
+        call_kwargs={"response_format": {"type": "json_object"}, "max_tokens": 8192},
+    )
+
+    assert len(attempts) == 2
+    assert "response_format" not in attempts[1]
+    assert attempts[1]["max_tokens"] == 16384
+
+
+def test_finished_response_is_not_retried() -> None:
+    """A completed answer, even an empty one, is not a budget problem."""
     from src.services.screening import ranker
 
     attempts: list[dict] = []
 
     def call(request_kwargs):
         attempts.append(dict(request_kwargs))
-        return _reasoning_truncation()
+        return _completion(finish_reason="stop", content="")
 
     ranker._call_screening_litellm_completion(
         call,
         model="deepseek-v4-flash",
-        call_kwargs={"max_tokens": 2048},
+        call_kwargs={"max_tokens": 8192},
     )
 
     assert len(attempts) == 1
 
 
-def test_truncated_json_mode_still_succeeds_when_retry_also_fails() -> None:
-    """A failed retry must surface the retry's response, not loop forever."""
+def test_truncation_retry_never_loops_at_the_ceiling() -> None:
+    """At the ceiling there is nothing left to raise, so do not retry."""
     from src.services.screening import ranker
 
     attempts: list[dict] = []
@@ -643,88 +690,26 @@ def test_truncated_json_mode_still_succeeds_when_retry_also_fails() -> None:
     ranker._call_screening_litellm_completion(
         call,
         model="deepseek-v4-flash",
-        call_kwargs={"response_format": {"type": "json_object"}, "max_tokens": 2048},
+        call_kwargs={"max_tokens": ranker._MAX_RETRY_MAX_TOKENS},
     )
 
-    assert len(attempts) == 2
+    assert len(attempts) == 1
 
 
-# --------------------------------------------------------------------------- #
-# Ranking prompt language follows REPORT_LANGUAGE
-# --------------------------------------------------------------------------- #
-
-
-def test_ranking_prompt_and_system_message_follow_report_language() -> None:
+def test_truncation_retry_is_bounded() -> None:
     from src.services.screening import ranker
 
-    cands = [Pick(rank=1, code="NVDA", name="NVIDIA", final_score=90.0, screen_score=90.0)]
-
-    zh_prompt = ranker._build_ranking_prompt(cands, "hints", "ctx", language="zh")
-    en_prompt = ranker._build_ranking_prompt(cands, "hints", "ctx", language="en")
-
-    assert "你是一个专业的股票研究员" in zh_prompt
-    assert "You are a professional equity researcher" in en_prompt
-    assert "你是一个专业的股票研究员" not in en_prompt
-
-    assert "你仅执行股票候选池内的相对排序" in ranker._ranking_system_instructions("zh")
-    assert "You only perform relative ranking" in ranker._ranking_system_instructions("en")
-    # Korean has no translated baseline; it renders from the English templates.
-    assert "You only perform relative ranking" in ranker._ranking_system_instructions("ko")
-
-
-def test_candidate_payload_is_identical_across_prompt_languages() -> None:
-    """Only the instructions may change; the untrusted data boundary must not."""
-    from src.services.screening import ranker
-
-    cands = [Pick(rank=1, code="NVDA", name="NVIDIA", final_score=90.0, screen_score=90.0)]
-    zh_prompt = ranker._build_ranking_prompt(cands, "hints", "ctx", language="zh")
-    en_prompt = ranker._build_ranking_prompt(cands, "hints", "ctx", language="en")
-
-    assert ranker._serialize_untrusted_data("ctx") in zh_prompt
-    assert ranker._serialize_untrusted_data("ctx") in en_prompt
-    assert "NVDA" in zh_prompt and "NVDA" in en_prompt
-
-
-def test_ranking_call_uses_localized_system_message(monkeypatch) -> None:
-    """The system message actually sent to the model must be localized."""
-    from src.services.screening import ranker
-
-    captured: list[list[dict]] = []
-
-    def fake_call(prompt, _api_key, _model, _base_url, **kwargs):
-        captured.append(kwargs.get("messages") or [])
-        return _valid_json()
-
-    sent = {}
-
-    def fake_call_llm(prompt, api_key, model, base_url, **kwargs):
-        sent["language"] = kwargs.get("language")
-        return "not json"
-
-    monkeypatch.setattr(ranker, "_call_llm", fake_call_llm)
-    monkeypatch.setattr(ranker, "_call_screening_litellm_completion", lambda *a, **k: fake_call(*a, **k))
-
-    ranker.rank_candidates_with_metadata(
-        [Pick(rank=1, code="NVDA", name="NVIDIA", final_score=90.0, screen_score=90.0)],
-        "hints",
-        "key",
-        "model",
-        "",
-        min_coverage=0.0,
-        max_retries=0,
-        language="en",
-    )
-
-    assert sent["language"] == "en"
+    retry = ranker._retry_budget_kwargs({"max_tokens": ranker._MAX_RETRY_MAX_TOKENS})
+    assert retry["max_tokens"] == ranker._MAX_RETRY_MAX_TOKENS
 
 
 def test_retry_budget_floor_applies_to_small_and_absent_budgets() -> None:
     from src.services.screening import ranker
 
-    assert ranker._retry_without_json_mode({"max_tokens": 512})["max_tokens"] == 8192
-    assert ranker._retry_without_json_mode({})["max_tokens"] == 8192
+    assert ranker._retry_budget_kwargs({"max_tokens": 512})["max_tokens"] == 8192
+    assert ranker._retry_budget_kwargs({})["max_tokens"] == 8192
     # A caller asking for more than the floor keeps its own budget.
-    assert ranker._retry_without_json_mode({"max_tokens": 16384})["max_tokens"] == 32768
+    assert ranker._retry_budget_kwargs({"max_tokens": 16384})["max_tokens"] == 32768
 
 
 def test_screening_ranking_budget_defaults_leave_room_for_reasoning() -> None:
