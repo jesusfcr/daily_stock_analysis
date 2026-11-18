@@ -46,6 +46,9 @@ import { SCREENING_TEXT, screeningText, type ScreeningTextKey } from '../locales
 import { AppPage, Button, InlineAlert, Select } from '../components/common';
 
 const MARKET_IDS = ['cn', 'us'];
+// Ten keeps every pick inside the LLM-ranked window (12) and gives a usable
+// sample per run; three was too small to judge a strategy.
+const DEFAULT_MAX_RESULTS = 10;
 const SCREEN_TASK_STORAGE_KEY = 'dsa.screening.activeScreenTask.v1';
 const SCREEN_TASK_POLL_INTERVAL_MS = 2000;
 const CUSTOM_STRATEGY_OPTION_VALUE = '__custom_strategy__';
@@ -124,7 +127,7 @@ const readPersistedScreenTask = (): PersistedScreenTask | null => {
       runId: typeof parsed.runId === 'string' && parsed.runId.trim() ? parsed.runId : undefined,
       market: typeof parsed.market === 'string' && parsed.market.trim() ? parsed.market : 'cn',
       strategy: typeof parsed.strategy === 'string' && parsed.strategy.trim() ? parsed.strategy : 'dual_low',
-      maxResults: Number.isFinite(restoredMaxResults) ? Math.min(100, Math.max(1, restoredMaxResults)) : 3,
+      maxResults: Number.isFinite(restoredMaxResults) ? Math.min(100, Math.max(1, restoredMaxResults)) : DEFAULT_MAX_RESULTS,
     };
   } catch {
     return null;
@@ -920,7 +923,7 @@ const StockScreeningPage: React.FC = () => {
   const [market, setMarket] = useState(restoredTask?.market || 'cn');
   const [strategy, setStrategy] = useState(restoredTask?.strategy || 'dual_low');
   const [strategies, setStrategies] = useState<ScreeningStrategy[]>([]);
-  const [maxResults, setMaxResults] = useState(restoredTask?.maxResults || 3);
+  const [maxResults, setMaxResults] = useState(restoredTask?.maxResults || DEFAULT_MAX_RESULTS);
   const [candidates, setCandidates] = useState<ScreeningCandidate[]>([]);
   const [hotspots, setHotspots] = useState<ScreeningHotspot[]>([]);
   const [hotspotsUpdatedAt, setHotspotsUpdatedAt] = useState<string | null>(null);
