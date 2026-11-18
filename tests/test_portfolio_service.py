@@ -691,6 +691,21 @@ class PortfolioServiceTestCase(unittest.TestCase):
             ],
         )
 
+    def test_aggregate_snapshot_currency_follows_accounts(self) -> None:
+        # A single non-CNY account reports its own base currency.
+        self._create_account_with_position(
+            market="us", currency="EUR", symbol="AAPL", close=100.0
+        )
+        single = self.service.get_portfolio_snapshot(as_of=date(2026, 1, 3), cost_method="fifo")
+        self.assertEqual(single["currency"], "EUR")
+
+        # Mixed base currencies keep the CNY cross-currency denominator.
+        self._create_account_with_position(
+            market="cn", currency="CNY", symbol="600519", close=120.0
+        )
+        mixed = self.service.get_portfolio_snapshot(as_of=date(2026, 1, 3), cost_method="fifo")
+        self.assertEqual(mixed["currency"], "CNY")
+
     def test_snapshot_marks_stale_close_and_missing_price(self) -> None:
         aid = self._create_account_with_position(
             market="cn",

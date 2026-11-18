@@ -265,8 +265,9 @@ class PortfolioApiTestCase(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 200, response.text)
                 selected = response.json()
-                self.assertEqual(selected["total_market_value"], 700)
-                self.assertEqual(selected["accounts"][0]["total_market_value_aggregate"], 700)
+                self.assertEqual(selected["currency"], "USD")
+                self.assertEqual(selected["total_market_value"], 100)
+                self.assertEqual(selected["accounts"][0]["total_market_value_aggregate"], 100)
 
     def test_snapshot_include_realtime_false_skips_realtime_quote(self) -> None:
         today = date.today()
