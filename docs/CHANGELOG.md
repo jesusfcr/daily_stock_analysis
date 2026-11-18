@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 
+- [改进] 美股选股快照的两处逐标的 yfinance 调用改为可缓存与并发：`Ticker.fast_info` 的股本改用磁盘缓存（`SCREENING_US_SHARES_CACHE_*`，默认 7 天，遇到拆股自动失效），`Ticker.info` 的 PE/PB/行业补充从串行改为并发。标普 500 全量快照由数百秒降到数十秒，同时消除一次性创建数百个 `Ticker` 对象导致的内存峰值。中文与其他市场行为不变。
 - [修复] Chat 与选股排序的提示词语言改为跟随 `REPORT_LANGUAGE`：英文环境下不再注入中文 A 股默认交易基线（此前会把 T+1、±10% 涨跌停、筹码集中度等 A 股规则套到美股标的），选股排序的 system/user 提示词与重试提示同步提供英文版本，排序返回的 `market_view` / `reason` 等散文不再固定输出中文。中文环境行为不变。
 
 - [修复] 持仓交易、现金流水和公司行动拒绝 NaN / Infinity 等非有限数值；CSV 预览、预演和提交在写入前拒绝包含非有限数值或费税合计溢出的交易行，并返回行号和字段，避免污染账本和快照；API 校验错误中的非有限数值可安全返回 JSON。

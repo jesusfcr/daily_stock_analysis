@@ -73,6 +73,9 @@ def test_screening_routes_have_a_primary_prefix_and_no_install_endpoint() -> Non
     assert client.request("POST", "/api/v1/screening/install").status_code == 404
 
 
+_ORIGINAL_CODE_MARKER = "Not derived from AlphaSift"
+
+
 def test_bundled_engine_keeps_source_and_license_notices() -> None:
     notice = (REPO_ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
     license_text = (SCREENING_ROOT / "LICENSE").read_text(encoding="utf-8")
@@ -86,6 +89,10 @@ def test_bundled_engine_keeps_source_and_license_notices() -> None:
     assert derived_files
     for path in derived_files:
         source = path.read_text(encoding="utf-8")
+        # Files in this package may be original DSA code; those declare it
+        # instead of claiming provenance they do not have.
+        if _ORIGINAL_CODE_MARKER in source:
+            continue
         assert f"Derived from AlphaSift revision {REFERENCE_REVISION}." in source
 
 

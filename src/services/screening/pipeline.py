@@ -43,6 +43,7 @@ from src.services.screening.scorer import (
 )
 from src.services.screening.selection_variant import apply_seeded_selection_variant
 from src.services.screening.snapshot import fetch_snapshot_with_fallback
+from src.services.screening.us_shares_cache import build_us_shares_cache
 from src.services.screening.strategy import load_all_strategies
 
 logger = logging.getLogger(__name__)
@@ -155,6 +156,11 @@ def screen(
         fallback_max_age_hours=config.snapshot_fallback_max_age_hours,
         cache_ttl_seconds=config.snapshot_cache_ttl_seconds,
         market=market,
+        us_shares_cache=build_us_shares_cache(
+            config.data_dir,
+            ttl_days=config.us_shares_cache_ttl_days,
+            enabled=config.us_shares_cache_enabled,
+        ),
     )
     effective_industry_map_files = (
         list(industry_map_files)

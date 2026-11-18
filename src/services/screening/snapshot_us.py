@@ -19,6 +19,7 @@ import pandas as pd
 import requests
 
 from src.core.trading_calendar import MARKET_TIMEZONE
+from src.services.screening.us_shares_cache import UsSharesCache
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +96,64 @@ def _fetch_sp500_tickers() -> list[str]:
     raise RuntimeError("Could not find Symbol column in S&P 500 Wikipedia table")
 
 
+def _tickers_with_recent_splits(data: pd.DataFrame, tickers: list[str]) -> list[str]:
+    """Symbols whose cached share count a split in the window would invalidate."""
+    if data is None or getattr(data, "empty", True):
+        return []
+    affected: list[str] = []
+    for ticker in tickers:
+        try:
+            splits = _split_series(data, ticker)
+            if splits is None:
+                continue
+            if float(pd.to_numeric(splits, errors="coerce").fillna(0).sum()) != 0.0:
+                affected.append(ticker)
+        except Exception:
+            continue
+    return affected
+
+
+def _split_series(data: pd.DataFrame, ticker: str):
+    """Return the split series for one symbol, whichever frame shape yfinance used."""
+    if isinstance(data.columns, pd.MultiIndex):
+        if ticker not in data.columns.get_level_values(0):
+            return None
+        frame = data[ticker]
+        return frame["Stock Splits"] if "Stock Splits" in frame.columns else None
+    return data["Stock Splits"] if "Stock Splits" in data.columns else None
+
+
+def _resolve_shares(ticker: str, shares_cache: UsSharesCache | None) -> float:
+    """Share count from the cache, falling back to one ``fast_info`` lookup.
+
+    ``fast_info`` is one HTTP round-trip per symbol and the main memory driver
+    of the snapshot phase, so it only runs for symbols the cache cannot answer.
+    """
+    if shares_cache is not None:
+        known, cached = shares_cache.lookup(ticker)
+        if known:
+            return cached or 0.0
+
+    import yfinance as yf
+
+    shares = 0.0
+    try:
+        info = yf.Ticker(ticker).fast_info
+        shares = float(getattr(info, "shares", None) or 0)
+    except Exception as exc:
+        logger.debug("fast_info failed for %s: %s", ticker, exc)
+        shares = 0.0
+    if shares_cache is not None:
+        shares_cache.record(ticker, shares if shares > 0 else None)
+    return shares
+
+
 def fetch_us_snapshot(
     tickers: list[str] | None = None,
     *,
     universe_source: str = "auto",
     max_workers: int = 8,
+    shares_cache: UsSharesCache | None = None,
 ) -> pd.DataFrame:
     """Fetch a US equity snapshot in the screening schema.
 
@@ -123,9 +177,16 @@ def fetch_us_snapshot(
         end=hist_end.strftime("%Y-%m-%d"),
         group_by="ticker",
         auto_adjust=True,
+        actions=True,
         progress=False,
         threads=True,
     )
+
+    # A split changes the share count, so any cached value for that symbol is
+    # stale even if it is still within its TTL.
+    split_tickers = _tickers_with_recent_splits(data, tickers)
+    if shares_cache is not None and split_tickers:
+        shares_cache.invalidate(split_tickers)
 
     rows = []
 
@@ -156,9 +217,8 @@ def fetch_us_snapshot(
             vol_20d = float(hist["Volume"].tail(20).mean())
             volume_ratio = (volume / vol_20d) if vol_20d > 0 else 1.0
 
-            info = yf.Ticker(ticker).fast_info
-            market_cap = getattr(info, "market_cap", None) or 0
-            shares = getattr(info, "shares", None) or 0
+            shares = _resolve_shares(ticker, shares_cache)
+            market_cap = round(price * shares, 0) if shares > 0 else 0
             turnover_rate = (volume / shares * 100) if shares > 0 else 0.0
 
             return {
@@ -189,6 +249,9 @@ def fetch_us_snapshot(
     if not rows:
         raise RuntimeError("yfinance returned no valid data for any ticker")
 
+    if shares_cache is not None:
+        shares_cache.flush()
+
     df = pd.DataFrame(rows)
 
     numeric_cols = [
@@ -209,28 +272,51 @@ def fetch_us_snapshot(
     return df
 
 
-def _enrich_info_fields(df: pd.DataFrame) -> None:
-    """Best-effort enrichment of pe_ratio, pb_ratio, industry from yfinance info."""
+def _enrich_info_fields(df: pd.DataFrame, *, max_workers: int = 8) -> None:
+    """Best-effort enrichment of pe_ratio, pb_ratio, industry from yfinance info.
+
+    ``Ticker.info`` is one HTTP round-trip per symbol. This used to run
+    sequentially over the whole universe, which dominated the snapshot phase
+    once the universe reached S&P 500 size.
+    """
     import yfinance as yf
 
     needs_pe = df["pe_ratio"].isna().sum() > len(df) * 0.5
-    if not needs_pe:
+    if not needs_pe or df.empty:
         return
 
-    for idx in df.index:
-        ticker = df.at[idx, "code"]
+    tickers = [str(code) for code in df["code"].tolist()]
+
+    def _fetch(ticker: str) -> tuple[str, dict]:
         try:
             info = yf.Ticker(ticker).info
-            if pd.isna(df.at[idx, "pe_ratio"]) or df.at[idx, "pe_ratio"] == 0:
-                df.at[idx, "pe_ratio"] = info.get("trailingPE")
-            if pd.isna(df.at[idx, "pb_ratio"]) or df.at[idx, "pb_ratio"] == 0:
-                df.at[idx, "pb_ratio"] = info.get("priceToBook")
-            if not df.at[idx, "industry"]:
-                df.at[idx, "industry"] = info.get("industry", "")
-            if not df.at[idx, "name"] or df.at[idx, "name"] == ticker:
-                df.at[idx, "name"] = info.get("shortName", ticker)
         except Exception:
-            pass
+            return ticker, {}
+        if not isinstance(info, dict):
+            return ticker, {}
+        return ticker, {
+            "trailingPE": info.get("trailingPE"),
+            "priceToBook": info.get("priceToBook"),
+            "industry": info.get("industry", ""),
+            "shortName": info.get("shortName", ticker),
+        }
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        fetched = dict(pool.map(_fetch, tickers))
+
+    for idx in df.index:
+        ticker = str(df.at[idx, "code"])
+        info = fetched.get(ticker) or {}
+        if not info:
+            continue
+        if pd.isna(df.at[idx, "pe_ratio"]) or df.at[idx, "pe_ratio"] == 0:
+            df.at[idx, "pe_ratio"] = info.get("trailingPE")
+        if pd.isna(df.at[idx, "pb_ratio"]) or df.at[idx, "pb_ratio"] == 0:
+            df.at[idx, "pb_ratio"] = info.get("priceToBook")
+        if not df.at[idx, "industry"]:
+            df.at[idx, "industry"] = info.get("industry", "")
+        if not df.at[idx, "name"] or df.at[idx, "name"] == ticker:
+            df.at[idx, "name"] = info.get("shortName", ticker)
 
 
 def fetch_daily_history_yfinance(

@@ -75,10 +75,14 @@ def fetch_snapshot_with_fallback(
     fallback_max_age_hours: float | None = None,
     cache_ttl_seconds: float = 0.0,
     market: str = "cn",
+    us_shares_cache: object | None = None,
 ) -> pd.DataFrame:
     """Try live sources, optionally falling back to the last-good snapshot."""
     if market == "us":
-        return _fetch_us_snapshot_with_fallback(required_columns)
+        return _fetch_us_snapshot_with_fallback(
+            required_columns,
+            us_shares_cache=us_shares_cache,
+        )
 
     errors = []
     required = required_columns or []
@@ -142,11 +146,13 @@ def fetch_snapshot_with_fallback(
 
 def _fetch_us_snapshot_with_fallback(
     required_columns: list[str] | None = None,
+    *,
+    us_shares_cache: object | None = None,
 ) -> pd.DataFrame:
     """Fetch US equity snapshot via yfinance adapter."""
     from src.services.screening.snapshot_us import fetch_us_snapshot
 
-    df = fetch_us_snapshot()
+    df = fetch_us_snapshot(shares_cache=us_shares_cache)
     missing = _missing_required_columns(df, required_columns or [])
     if missing:
         logger.warning("US snapshot missing columns: %s", ",".join(missing))

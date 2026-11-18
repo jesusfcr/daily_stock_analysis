@@ -199,6 +199,10 @@ class Config:
         _PROJECT_ROOT / "data" / "snapshot.last_good.json"
     )
     snapshot_cache_ttl_seconds: float = 300.0
+    # US share counts come from one yfinance round-trip per symbol; they change
+    # only on splits/issuance, so they are cached on disk between runs.
+    us_shares_cache_enabled: bool = True
+    us_shares_cache_ttl_days: float = 7.0
 
     # Strategy directory
     strategies_dir: Path = field(default_factory=_default_strategies_dir)
@@ -328,6 +332,8 @@ class Config:
             report_language=os.getenv("REPORT_LANGUAGE", "zh").strip() or "zh",
             snapshot_source_priority=_resolve_snapshot_source_priority(),
             fallback_snapshot_path=fallback_snapshot_path,
+            us_shares_cache_enabled=_parse_bool_env("SCREENING_US_SHARES_CACHE_ENABLED", True),
+            us_shares_cache_ttl_days=_parse_float_env("SCREENING_US_SHARES_CACHE_TTL_DAYS", 7.0),
             snapshot_cache_ttl_seconds=max(
                 0.0,
                 _parse_float_env("SCREENING_SNAPSHOT_CACHE_TTL_SEC", 300.0),
