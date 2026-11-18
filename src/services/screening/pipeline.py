@@ -435,6 +435,7 @@ def screen(
             config_path=str(config.llm_config_path or ""),
             timeout_sec=config.llm_timeout_sec,
             max_tokens=config.llm_max_tokens,
+            max_prompt_chars=config.llm_prompt_max_chars,
             degradation=llm_prompt_degradation,
             language=config.report_language,
         )

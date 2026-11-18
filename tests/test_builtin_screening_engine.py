@@ -462,6 +462,52 @@ def test_pipeline_uses_ranker_success_flag_instead_of_partial_llm_scores(monkeyp
     assert "LLM ranking failed: fell back to screen_score" in result.degradation
 
 
+def test_pipeline_passes_prompt_budget_to_ranker(monkeypatch) -> None:
+    """LLM_PROMPT_MAX_CHARS must reach the ranker, not stay at its default."""
+    snapshot_df = pd.DataFrame([{"code": "000001", "name": "Ping An", "price": 10.0,
+                                 "change_pct": 1.2, "amount": 200_000_000.0}])
+    snapshot_df.attrs.update({"snapshot_source": "sina", "source_errors": [], "fallback_used": False})
+    strategy = Strategy(
+        name="demo", display_name="Demo", description="demo",
+        screening=ScreeningConfig(enabled=True, market_scope=["cn"], hard_filters=HardFilterConfig(),
+                                  factor_weights={"value": 1.0}, max_output=3),
+    )
+    config = ScreeningRuntimeConfig(
+        strategies_dir=SCREENING_ROOT / "strategies", llm_model="openai/gpt-5-mini",
+        llm_api_key="test-key", post_analyzers=[], risk_enabled=False,
+        portfolio_diversity_enabled=False, llm_prompt_max_chars=48000,
+    )
+    seen = {}
+
+    def fake_ranker(picks, *_args, **kwargs):
+        seen["max_prompt_chars"] = kwargs.get("max_prompt_chars")
+        return SimpleNamespace(picks=picks, ranked=False, market_view="", selection_logic="",
+                               portfolio_risk="", coverage=0.0, errors=[])
+
+    monkeypatch.setattr(screening_pipeline, "load_all_strategies", lambda _path: {"demo": strategy})
+    monkeypatch.setattr(screening_pipeline, "fetch_snapshot_with_fallback", lambda *a, **k: snapshot_df.copy())
+    monkeypatch.setattr(screening_pipeline, "apply_hard_filters", lambda df, _f: df.copy())
+    monkeypatch.setattr(screening_pipeline, "compute_screen_scores", lambda df, _s: df.assign(screen_score=88.0))
+    monkeypatch.setattr(screening_pipeline, "apply_dsa_provider_context", lambda picks, _c: [])
+    monkeypatch.setattr(screening_pipeline, "rank_candidates_with_metadata", fake_ranker)
+    monkeypatch.setattr(screening_pipeline, "apply_risk_overlay", lambda picks, **k: (picks, []))
+    monkeypatch.setattr(screening_pipeline, "apply_portfolio_overlay", lambda picks, **k: (picks, []))
+    monkeypatch.setattr(screening_pipeline, "run_post_analyzers", lambda picks, **k: (picks, []))
+
+    screening_pipeline.screen("demo", use_llm=True, config=config)
+
+    assert seen["max_prompt_chars"] == 48000
+
+
+def test_prompt_budget_env(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_PROMPT_MAX_CHARS", "48000")
+    assert ScreeningRuntimeConfig.from_env().llm_prompt_max_chars == 48000
+    monkeypatch.setenv("LLM_PROMPT_MAX_CHARS", "100")
+    assert ScreeningRuntimeConfig.from_env().llm_prompt_max_chars == 4000  # floor
+    monkeypatch.delenv("LLM_PROMPT_MAX_CHARS")
+    assert ScreeningRuntimeConfig.from_env().llm_prompt_max_chars == 24000
+
+
 def test_default_scorecard_scores_full_pool_before_seeded_rotation(monkeypatch) -> None:
     snapshot_df = pd.DataFrame([
         {

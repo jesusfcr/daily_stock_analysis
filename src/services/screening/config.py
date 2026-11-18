@@ -185,6 +185,9 @@ class Config:
     llm_max_retries: int = 1
     llm_min_coverage: float = 0.60
     llm_context_max_chars: int = 4000
+    # Whole ranking prompt. Over budget, lower-ranked candidates are cut to
+    # their identity line first, which drops their news context.
+    llm_prompt_max_chars: int = 24000
     llm_timeout_sec: float = 60.0
     llm_max_tokens: int = 8192
     # Language of the ranking prompt and of the prose it returns. Falls back to
@@ -327,6 +330,7 @@ class Config:
             llm_max_retries=max(0, int(os.getenv("LLM_MAX_RETRIES", "1"))),
             llm_min_coverage=_parse_float_env("LLM_MIN_COVERAGE", 0.60),
             llm_context_max_chars=max(500, int(os.getenv("LLM_CONTEXT_MAX_CHARS", "4000"))),
+            llm_prompt_max_chars=max(4000, int(os.getenv("LLM_PROMPT_MAX_CHARS", "24000"))),
             llm_timeout_sec=max(1.0, _parse_float_env("LLM_TIMEOUT_SEC", 60.0)),
             llm_max_tokens=max(1, int(os.getenv("LLM_MAX_TOKENS", "8192"))),
             report_language=os.getenv("REPORT_LANGUAGE", "zh").strip() or "zh",

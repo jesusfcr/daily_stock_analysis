@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 新增 `LLM_PROMPT_MAX_CHARS`（默认 24000，下限 4000）：选股 LLM 排序提示词总长度上限。此前固定为 24000，候选附带新闻后超出预算，排名靠后的候选被裁剪为仅代码/名称，其新闻上下文丢失。
 - [改进] 新增 `SCREENING_CONTEXT_MAX_CANDIDATES`（默认 3，上限 12）：控制选股时补充行情/基本面/新闻上下文的候选数量，排序前与排序后共用；每个候选消耗新闻与事件搜索，属于成本开关。
 - [修复] 美股选股快照缓存每股收益、每股净资产与行业（`us_fundamentals_cache.json`，与股本缓存同开关与 TTL），PE/PB 按当日价格重算；每次最多刷新 150 个过期标的，刷新失败保留上次值。修复 Yahoo `Ticker.info` 限流（HTTP 429）后 PE/PB 全部为空、value 因子退化为常数、带 PE 条件的策略结果为零的问题。
 - [改进] Web 选股默认返回数量由 3 调整为 10，保持在 LLM 排序窗口（12）内。
