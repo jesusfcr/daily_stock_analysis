@@ -257,11 +257,14 @@ def refresh_held_position_prices(
 
     fetcher = DataFetcherManager()
     db = DatabaseManager.get_instance()
+    # yf.download(end=...) is exclusive, so pass tomorrow to include today's
+    # final bar. This refresh runs post-close, so today's bar is settled.
+    end_date = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     refreshed: List[str] = []
     failed: List[str] = []
     for code in symbols:
         try:
-            df, source = fetcher.get_daily_data(code, days=30)
+            df, source = fetcher.get_daily_data(code, days=30, end_date=end_date)
             if df is not None and len(df):
                 db.save_daily_data(df, code, source)
                 refreshed.append(code)
